@@ -5,6 +5,7 @@
 (************************************************************************)
 
 module Lsp = Fleche_lsp
+module Dbg = Petanque_json.Dbg
 open Petanque_json.Interp
 open Protocol_shell
 
@@ -24,12 +25,38 @@ open Protocol_shell
    separate hashtable and is NOT cleared here — so client-held
    state_ids remain valid across a trim. *)
 let trim_caches () =
-  Fleche.Memo.Intern.clear ();
-  Fleche.Memo.Interp.clear ();
-  Fleche.Memo.Admit.clear ();
-  Fleche.Memo.Init.clear ();
-  Fleche.Memo.Require.clear ();
-  Gc.full_major ()
+  if not (Dbg.enabled ()) then (
+    Fleche.Memo.Intern.clear ();
+    Fleche.Memo.Interp.clear ();
+    Fleche.Memo.Admit.clear ();
+    Fleche.Memo.Init.clear ();
+    Fleche.Memo.Require.clear ();
+    Gc.full_major ())
+  else begin
+    let rss0 = Dbg.rss_kb () in
+    let t0 = Dbg.now () in
+    let g0 = Gc.quick_stat () in
+    Fleche.Memo.Intern.clear ();
+    Fleche.Memo.Interp.clear ();
+    Fleche.Memo.Admit.clear ();
+    Fleche.Memo.Init.clear ();
+    Fleche.Memo.Require.clear ();
+    let t_clear = Dbg.now () in
+    Gc.full_major ();
+    let t_gc = Dbg.now () in
+    let g1 = Gc.quick_stat () in
+    let rss1 = Dbg.rss_kb () in
+    (* heap_words are in machine words; *8 bytes /1024 = kB on 64-bit.
+       Only heap_words/top_heap_words are populated by quick_stat. *)
+    let wkb w = w * 8 / 1024 in
+    Dbg.log
+      (Printf.sprintf
+         "trimCaches: clear=%.3fs gc=%.3fs | rss %dkB -> %dkB (d=%+dkB) | \
+          heap %dkB -> %dkB top=%dkB"
+         (t_clear -. t0) (t_gc -. t_clear) rss0 rss1 (rss1 - rss0)
+         (wkb g0.Gc.heap_words) (wkb g1.Gc.heap_words)
+         (wkb g1.Gc.top_heap_words))
+  end
 
 let do_handle ~fn ~token action =
   match action with
@@ -81,7 +108,8 @@ type doc_handler =
   -> uri:Lang.LUri.File.t
   -> Fleche.Doc.t Petanque.Agent.R.t
 
-let interp ~fn ~token (r : Lsp.Base.Message.t) : Lsp.Base.Message.t option =
+let interp_raw ~fn ~token (r : Lsp.Base.Message.t) :
+    Lsp.Base.Message.t option =
   match r with
   | Request { id; method_; params } ->
     let response = request ~fn ~token ~id ~method_ ~params in
@@ -100,3 +128,27 @@ let interp ~fn ~token (r : Lsp.Base.Message.t) : Lsp.Base.Message.t option =
     let message = "unhandled response: " ^ string_of_int id in
     let log = Lsp.Base.mk_logTrace ~message ~verbose:None in
     Some (Lsp.Base.Message.Notification log)
+
+(* Per-RPC instrumentation: log the method, wall duration, and RSS
+   before/after each message so memory movement can be attributed to a
+   specific operation.  Transparent (and zero-overhead) when logging is off. *)
+let interp ~fn ~token (r : Lsp.Base.Message.t) : Lsp.Base.Message.t option =
+  if not (Dbg.enabled ()) then interp_raw ~fn ~token r
+  else begin
+    let method_ =
+      match r with
+      | Request { method_; _ } -> method_
+      | Notification { method_; _ } -> "notif:" ^ method_
+      | Response (Ok { id; _ }) | Response (Error { id; _ }) ->
+        Printf.sprintf "response#%d" id
+    in
+    let rss0 = Dbg.rss_kb () in
+    let t0 = Dbg.now () in
+    Dbg.log (Printf.sprintf "RPC >> %-28s rss=%dkB" method_ rss0);
+    let res = interp_raw ~fn ~token r in
+    let rss1 = Dbg.rss_kb () in
+    Dbg.log
+      (Printf.sprintf "RPC << %-28s %.3fs rss=%dkB (d=%+dkB)" method_
+         (Dbg.now () -. t0) rss1 (rss1 - rss0));
+    res
+  end

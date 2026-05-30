@@ -32,12 +32,23 @@ module Make (O : Obj) : S with type t = O.t = struct
   let of_obj (s : O.t) : int =
     let id = mk_id s in
     let () = Memo.add memo id s in
+    if Dbg.enabled () then
+      Dbg.log
+        (Printf.sprintf "obj_map[%s] of_obj  id=%d  count=%d" O.name id
+           (Memo.length memo));
     id
 
   let to_obj (id : int) : (O.t, _) Result.t =
     match Memo.find_opt memo id with
-    | Some v -> Ok v
+    | Some v ->
+      if Dbg.enabled () then
+        Dbg.log (Printf.sprintf "obj_map[%s] to_obj  id=%d  HIT" O.name id);
+      Ok v
     | None ->
+      if Dbg.enabled () then
+        Dbg.log
+          (Printf.sprintf "obj_map[%s] to_obj  id=%d  MISS  count=%d" O.name id
+             (Memo.length memo));
       if false then dump_memo ();
       Error (Format.asprintf "key %d for object %s not found" id O.name)
 
