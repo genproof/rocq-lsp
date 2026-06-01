@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Invoke the coq-lsp `coq/extract` command on a goal in an open proof.
+
+Usage:
+    extract.py <file.v> <line> <col> <name> [--root DIR]
+
+  <line>/<col> are 1-indexed (as shown in your editor). The cursor should be on
+  the sentence whose *preceding* goal you want to extract (coq-lsp "Prev" mode).
+
+It generates, next to <file.v>:
+    <name>_goal.v   - the closed goal as `Definition <name>_Goal` (always rewritten)
+    <name>_proof.v  - `Lemma <name>_proof : ... . Proof. intros .... Admitted.`
+and prints the paths plus the `eapply <name>_proof` to drop into the proof.
+
+Then:  coqc -R <root>/src lzma <name>_goal.v && coqc ... <name>_proof.v
+       add `Require Import ...<name>_proof.` to the main file, replace the
+       tactic block with `eapply <name>_proof; try eassumption.`
+       (to fully prove it, paste the original tactics into <name>_proof.v
+        before `Admitted` and change it to `Qed`.)
+"""
+import json, subprocess, os, sys, argparse
+
+SRV = os.environ.get(
+    "COQLSP",
+    "/home/vasa/genproof/rocq-lsp/_build/default/lsp-server/native/coq_lsp.exe")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("file")
+    ap.add_argument("line", type=int, help="1-indexed line")
+    ap.add_argument("col", type=int, help="1-indexed column")
+    ap.add_argument("name")
+    ap.add_argument("--root", default=None, help="workspace root (default: cwd)")
+    a = ap.parse_args()
+
+    f = os.path.abspath(a.file)
+    root = os.path.abspath(a.root) if a.root else os.getcwd()
+    uri = "file://" + f
+    env = dict(os.environ)
+    env.setdefault("FCC_NO_SERLIB", "1")  # _build vs opam serlib clash
+    p = subprocess.Popen([SRV], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=env)
+
+    def send(m):
+        b = json.dumps(m).encode()
+        p.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+        p.stdin.flush()
+
+    def readmsg():
+        hdr = b""
+        while b"\r\n\r\n" not in hdr:
+            c = p.stdout.read(1)
+            if not c:
+                return None
+            hdr += c
+        n = int([l for l in hdr.decode().split("\r\n")
+                 if l.lower().startswith("content-length")][0].split(":")[1])
+        body = b""
+        while len(body) < n:
+            ch = p.stdout.read(n - len(body))
+            if not ch:
+                return None
+            body += ch
+        return json.loads(body)
+
+    def wait(i):
+        while True:
+            m = readmsg()
+            if m is None:
+                return None
+            if m.get("id") == i and ("result" in m or "error" in m):
+                return m
+
+    send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+          "params": {"processId": os.getpid(), "rootUri": "file://" + root,
+                     "capabilities": {}}})
+    wait(1)
+    send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+          "params": {"textDocument": {"uri": uri, "languageId": "coq",
+                                      "version": 1, "text": open(f).read()}}})
+    send({"jsonrpc": "2.0", "id": 2, "method": "coq/extract",
+          "params": {"textDocument": {"uri": uri},
+                     "position": {"line": a.line - 1, "character": a.col - 1},
+                     "name": a.name}})
+    r = wait(2)
+    send({"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}})
+    send({"jsonrpc": "2.0", "method": "exit", "params": {}})
+    try:
+        p.wait(timeout=15)
+    except Exception:
+        p.kill()
+
+    if not r or "result" not in r:
+        print("FAILED:", json.dumps(r), file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(r["result"], indent=2))
+
+
+if __name__ == "__main__":
+    main()
