@@ -407,6 +407,11 @@ let do_goals ~params =
   let handler = Rq_goals.goals ~pp_format ~compact ~mode ~pretac () in
   do_position_request ~postpone:true ~handler ~params
 
+let do_extract ~params =
+  let name = Option.default "extracted" (ostring_field "name" params) in
+  let handler = Rq_extract.extract ~name () in
+  do_position_request ~postpone:true ~handler ~params
+
 let do_definition =
   do_position_request ~postpone:true ~handler:Rq_definition.request
 
@@ -649,6 +654,7 @@ let dispatch_request ~token ~method_ ~params : Rq.Action.t =
   | "proof/goals" -> do_goals ~params
   (* Proof-specific stuff *)
   | "coq/saveVo" -> do_save_vo ~params
+  | "coq/extract" -> do_extract ~params
   (* Coq specific stuff *)
   | "coq/getDocument" -> do_document ~params
   (* Petanque embedding *)
