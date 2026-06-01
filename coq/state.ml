@@ -209,3 +209,84 @@ let info_universes ~token ~st =
   let nuniv = Univ.Level.Set.cardinal univs in
   let nconst = count_edges univ in
   (nuniv, nconst)
+
+(* Goal extraction: close the first open goal over its hypothesis context into a
+   single closed type, suitable for emitting as a standalone [Definition]. The
+   [mkNamed*] family abstracts the context variables, so the result references
+   only globals (and the ambient section variables, which are left free). *)
+module Extract = struct
+  type t =
+    { statement : string  (** the closed goal type, printed parseably *)
+    ; intro_names : string list
+          (** binder names, outermost-first, for the proof skeleton's [intros];
+              section variables first (re-added by section discharge), then the
+              quantified local hypotheses *)
+    ; section_vars : string list
+          (** names of the ambient section variables left free in [statement] *)
+    }
+end
+
+(* Print an EConstr fully explicit (implicits on, notations off) for round-trip
+   safety, restoring the printing flags afterwards. *)
+let print_explicit env sigma c =
+  let open Constrextern in
+  let si, sn = (!print_implicits, !print_no_symbol) in
+  print_implicits := true;
+  print_no_symbol := true;
+  let finally () =
+    print_implicits := si;
+    print_no_symbol := sn
+  in
+  match Pp.string_of_ppcmds (Printer.pr_econstr_env env sigma c) with
+  | s ->
+    finally ();
+    s
+  | exception e ->
+    finally ();
+    raise e
+
+let extract_goal_impl ~(st : t) () =
+  match st.Vernacstate.interp.lemmas with
+  | None -> CErrors.user_err (Pp.str "extract: no open proof")
+  | Some lemmas ->
+    let pf =
+      Vernacstate.LemmaStack.with_top lemmas ~f:(fun ps -> Declare.Proof.get ps)
+    in
+    let Proof_.{ goals; sigma; _ } = Proof_.data pf in
+    (match goals with
+    | [] -> CErrors.user_err (Pp.str "extract: no goals")
+    | g :: _ ->
+      let (Evd.EvarInfo evi) = Evd.find sigma g in
+      let genv = Global.env () in
+      let fenv = Evd.evar_filtered_env genv evi in
+      let concl =
+        match Evd.evar_body evi with
+        | Evd.Evar_defined _ ->
+          CErrors.user_err (Pp.str "extract: goal already solved")
+        | Evd.Evar_empty -> Evd.evar_concl evi
+      in
+      let nctx = EConstr.named_context fenv in
+      (* The ambient section variables are exactly the named context of the
+         global env; leave them FREE in the closed type (they become section
+         vars in the regenerated file, re-added by section discharge). Quantify
+         only the proof-local hypotheses. *)
+      let id_of d = Context.Named.Declaration.get_id d in
+      let sec_ids =
+        List.map id_of (Environ.named_context genv) |> Names.Id.Set.of_list
+      in
+      let is_sec d = Names.Id.Set.mem (id_of d) sec_ids in
+      let local_nctx = List.filter (fun d -> not (is_sec d)) nctx in
+      let closed = EConstr.it_mkNamedProd_or_LetIn sigma concl local_nctx in
+      let statement = print_explicit genv sigma closed in
+      let name_of d = Names.Id.to_string (id_of d) in
+      (* most-recent-first -> outermost-first; section discharge prepends the
+         section vars in declaration order (reverse of named-context order) *)
+      let section_vars = List.rev_map name_of (List.filter is_sec nctx) in
+      let local_names = List.rev_map name_of local_nctx in
+      { Extract.statement
+      ; intro_names = section_vars @ local_names
+      ; section_vars
+      })
+
+let extract_goal ~token ~st =
+  in_state ~token ~st ~f:(extract_goal_impl ~st) ()
