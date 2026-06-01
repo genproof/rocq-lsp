@@ -76,6 +76,21 @@ val admit_goal : token:Limits.Token.t -> st:t -> (t, Loc.t) Protect.E.t
 val info_universes :
   token:Limits.Token.t -> st:t -> (int * int, Loc.t) Protect.E.t
 
+(** Goal extraction: close the first open goal over its context. *)
+module Extract : sig
+  type t =
+    { statement : string  (** the closed goal type, printed parseably *)
+    ; intro_names : string list  (** binder names, outermost-first *)
+    ; section_vars : string list  (** ambient section variables left free *)
+    }
+end
+
+(** [extract_goal ~token ~st] closes the first open goal of [st] into a single
+    self-contained type (a [Definition]-ready string) plus the binder names for
+    a proof skeleton. Fails if there is no open proof / no goals. *)
+val extract_goal :
+  token:Limits.Token.t -> st:t -> (Extract.t, Loc.t) Protect.E.t
+
 (** Extra / interanl *)
 val marshal_in : in_channel -> t
 
