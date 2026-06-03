@@ -8,6 +8,29 @@ module Lsp = Fleche_lsp
 open Petanque_json.Interp
 open Protocol_shell
 
+(* Free the global Flèche memoization tables.
+
+   pet inherits the same unbounded ``Fleche.Memo.{Intern, Interp, Admit,
+   Init, Require}`` hashtables that coq-lsp does — every executed
+   sentence's post-state is cached and never reclaimed.  Without a way
+   to release that state, a long-running pet process can accumulate
+   tens of GB of resident memory.
+
+   Mirrors ``controller/nt_cache_trim.ml``'s ``cache_trim`` so the same
+   five tables that ``coq/trimCaches`` clears on the LSP side are
+   reachable from the pet side.
+
+   The int↔State.t mapping in ``petanque/json/obj_map.ml`` is a
+   separate hashtable and is NOT cleared here — so client-held
+   state_ids remain valid across a trim. *)
+let trim_caches () =
+  Fleche.Memo.Intern.clear ();
+  Fleche.Memo.Interp.clear ();
+  Fleche.Memo.Admit.clear ();
+  Fleche.Memo.Init.clear ();
+  Fleche.Memo.Require.clear ();
+  Gc.full_major ()
+
 let do_handle ~fn ~token action =
   match action with
   | Action.Now handler -> handler ~token
@@ -63,6 +86,12 @@ let interp ~fn ~token (r : Lsp.Base.Message.t) : Lsp.Base.Message.t option =
   | Request { id; method_; params } ->
     let response = request ~fn ~token ~id ~method_ ~params in
     Some (Lsp.Base.Message.response response)
+  | Notification { method_; params = _ } when String.equal method_ "petanque/trimCaches" ->
+    (* Free Flèche's global memoization tables.  No response; state_ids
+       outstanding on the client side stay valid because obj_map is
+       untouched. *)
+    trim_caches ();
+    None
   | Notification { method_; params = _ } ->
     let message = "unhandled notification: " ^ method_ in
     let log = Lsp.Base.mk_logTrace ~message ~verbose:None in
