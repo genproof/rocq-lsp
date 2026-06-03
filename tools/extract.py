@@ -2,7 +2,11 @@
 """Invoke the coq-lsp `coq/extract` command on a goal in an open proof.
 
 Usage:
-    extract.py <file.v> <line> <col> <name> [--root DIR]
+    extract.py <file.v> <line> <col> <name> [--root DIR] [--skip-annotations]
+
+  By default it also inserts commented Require + `eapply <name>_proof` hints into
+  the source file right above the extraction point (comments only -- coq-lsp
+  ignores them, so no re-elaboration). Pass --skip-annotations to disable.
 
   <line>/<col> are 1-indexed (as shown in your editor). The cursor should be on
   the sentence whose *preceding* goal you want to extract (coq-lsp "Prev" mode).
@@ -26,6 +30,31 @@ import json, subprocess, os, sys, argparse
 SRV = os.environ.get("COQLSP", "coq-lsp")
 
 
+def annotate_source(path, line_1, name, proof_module, apply_with):
+    """Insert commented Require + delegation hints into the source file, right
+    above the extraction line, so it is obvious how to wire in the lemma.
+    Comments only -- compiles unchanged. Returns False if skipped."""
+    lines = open(path).read().split("\n")
+    idx = line_1 - 1
+    if not (0 <= idx < len(lines)):
+        return False
+    # Skip if a hint block is already here (re-run lands on the inserted block,
+    # which has shifted the original line down).
+    if any("coq-lsp extract" in l for l in lines[max(0, idx - 1):idx + 5]):
+        return False
+    src = lines[idx]
+    indent = src[: len(src) - len(src.lstrip())]
+    block = [
+        f"{indent}(* --- coq-lsp extract: this goal is now {name}_proof.v --- *)",
+        f"{indent}(* 1. add near the top of this file:  Require Import {proof_module}. *)",
+        f"{indent}(* 2. replace the tactic block below with: *)",
+        f"{indent}(* {apply_with}; try eassumption. *)",
+    ]
+    lines[idx:idx] = block
+    open(path, "w").write("\n".join(lines))
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("file")
@@ -33,6 +62,9 @@ def main():
     ap.add_argument("col", type=int, help="1-indexed column")
     ap.add_argument("name")
     ap.add_argument("--root", default=None, help="workspace root (default: cwd)")
+    ap.add_argument("--skip-annotations", action="store_true",
+                    help="do not insert the commented Require + eapply hints into "
+                         "the source file (annotation is on by default)")
     a = ap.parse_args()
 
     f = os.path.abspath(a.file)
@@ -98,7 +130,18 @@ def main():
     if not r or "result" not in r:
         print("FAILED:", json.dumps(r), file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(r["result"], indent=2))
+    res = r["result"]
+    print(json.dumps(res, indent=2))
+    if not a.skip_annotations:
+        gm = res.get("goal_module", "")
+        proof_module = (gm[:-len("_goal")] + "_proof") if gm.endswith("_goal") \
+            else a.name + "_proof"
+        apply_with = res.get("apply_with", "eapply " + a.name + "_proof")
+        if annotate_source(f, a.line, a.name, proof_module, apply_with):
+            print("annotated %s at line %d" % (a.file, a.line), file=sys.stderr)
+        else:
+            print("annotate: skipped (out of range or already annotated)",
+                  file=sys.stderr)
 
 
 if __name__ == "__main__":
