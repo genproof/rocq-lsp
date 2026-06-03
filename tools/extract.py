@@ -20,9 +20,10 @@ Then:  coqc -R <root>/src lzma <name>_goal.v && coqc ... <name>_proof.v
 """
 import json, subprocess, os, sys, argparse
 
-SRV = os.environ.get(
-    "COQLSP",
-    "/home/vasa/genproof/rocq-lsp/_build/default/lsp-server/native/coq_lsp.exe")
+# The coq-lsp server to drive. Defaults to the `coq-lsp` on PATH (e.g. an
+# opam-installed one, which has `coq/extract` once this branch is installed).
+# Override with COQLSP=/path/to/coq_lsp.exe to use an in-tree _build binary.
+SRV = os.environ.get("COQLSP", "coq-lsp")
 
 
 def main():
@@ -38,7 +39,9 @@ def main():
     root = os.path.abspath(a.root) if a.root else os.getcwd()
     uri = "file://" + f
     env = dict(os.environ)
-    env.setdefault("FCC_NO_SERLIB", "1")  # _build vs opam serlib clash
+    # An opam-installed coq-lsp needs no special env. Only when driving an
+    # in-tree _build binary against an opam install do the serlib companion
+    # .cmxs clash on load -- set COQLSP_NO_SERLIB=1 yourself in that case.
     p = subprocess.Popen([SRV], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, env=env)
 
