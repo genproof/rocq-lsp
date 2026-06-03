@@ -114,11 +114,15 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
      definitions) so that both the goal AND any moved proof's references to
      section-local helpers resolve standalone. We do this whenever inside a
      section, even with no section variables. *)
+  let lemma_line = enclosing_lemma_line ~lines ~upto in
+  let preamble =
+    match sec with
+    | Some (sec_line, _) -> copy_preamble ~lines ~a:(sec_line + 1) ~b:lemma_line
+    | None -> ""
+  in
   let body =
     match sec with
-    | Some (sec_line, sec_name) ->
-      let lemma_line = enclosing_lemma_line ~lines ~upto in
-      let preamble = copy_preamble ~lines ~a:(sec_line + 1) ~b:lemma_line in
+    | Some (_, sec_name) ->
       Printf.sprintf
         "Section %s.\n%s\nDefinition %s_Goal : Prop :=\n%s.\nEnd %s.\n" sec_name
         preamble name ex.statement sec_name
@@ -138,30 +142,63 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
   (* Proof file: created only if absent (may contain real work). *)
   let created_proof = not (Sys.file_exists proof_path) in
   if created_proof then (
-    let intros =
-      match ex.intro_names with
-      | [] -> "idtac"
-      | l -> "intros " ^ String.concat " " l
-    in
-    (* Section discharge turns [<name>_Goal] into a function of the section
-       vars, so the lemma proves [forall <svs>, <name>_Goal <svs>]. *)
-    let goal_app =
-      match ex.section_vars with
-      | [] -> name ^ "_Goal"
-      | svs ->
-        let s = String.concat " " svs in
-        Printf.sprintf "forall %s, %s_Goal %s" s name s
-    in
     let proof_src =
-      Printf.sprintf
-        "%s\n\
-         Require Import %s.\n\n\
-         Lemma %s_proof : %s.\n\
-         Proof.\n\
-        \  %s.\n\
-        \  (* VST: try [unfold abbreviate in *.] to restore the display *)\n\
-         Admitted.\n"
-        requires goal_mod name goal_app intros
+      match sec with
+      | Some (_, sec_name) ->
+        (* IN-SECTION proof: reconstruct the enclosing section (its variables and
+           local helper lemmas, verbatim) and define the Goal locally, so that
+           relocated tactics referencing section-local helpers resolve against
+           the SAME in-section signatures -- helpers take the section variables
+           implicitly via the section context, NOT as extra leading arguments
+           (which is what an OUTSIDE-section proof would force, shifting the
+           positional args and failing with "expected nat"/"expected <var type>").
+           After [End], [<name>_proof] discharges to [forall <svs>, <name>_Goal
+           <svs>], exactly the type the caller's [eapply <name>_proof] expects.
+           Self-contained (the Goal is re-defined here, not Required from the goal
+           module) so the re-declared helpers are not shadowed by imported
+           discharged copies. Intro only the proof-LOCAL hypotheses; the section
+           variables are ambient. *)
+        let n_sec = List.length ex.section_vars in
+        let rec drop n l =
+          if n <= 0 then l
+          else match l with [] -> [] | _ :: tl -> drop (n - 1) tl
+        in
+        let intros_local =
+          match drop n_sec ex.intro_names with
+          | [] -> "idtac"
+          | l -> "intros " ^ String.concat " " l
+        in
+        Printf.sprintf
+          "%s\n\
+           Section %s.\n\
+           %s\n\
+           Definition %s_Goal : Prop :=\n\
+           %s.\n\n\
+           Lemma %s_proof : %s_Goal.\n\
+           Proof.\n\
+          \  %s.\n\
+          \  (* VST: try [unfold abbreviate in *.] to restore the display. *)\n\
+          \  (* Move the original tactics here to prove it for real. *)\n\
+           Admitted.\n\
+           End %s.\n"
+          requires sec_name preamble name ex.statement name name intros_local
+          sec_name
+      | None ->
+        (* No enclosing section: no section-local helpers to misalign, so the
+           proof simply Requires the (regenerated) goal module. *)
+        let intros =
+          match ex.intro_names with
+          | [] -> "idtac"
+          | l -> "intros " ^ String.concat " " l
+        in
+        Printf.sprintf
+          "%s\n\
+           Require Import %s.\n\n\
+           Lemma %s_proof : %s_Goal.\n\
+           Proof.\n\
+          \  %s.\n\
+           Admitted.\n"
+          requires goal_mod name name intros
     in
     write_file proof_path proof_src);
   `Assoc
