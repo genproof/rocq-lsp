@@ -82,6 +82,7 @@ module Extract : sig
     { statement : string  (** the closed goal type, printed parseably *)
     ; intro_names : string list  (** binder names, outermost-first *)
     ; section_vars : string list  (** ambient section variables left free *)
+    ; hash : string  (** short hex digest of [statement] for staleness checks *)
     }
 end
 

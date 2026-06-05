@@ -223,8 +223,16 @@ module Extract = struct
               quantified local hypotheses *)
     ; section_vars : string list
           (** names of the ambient section variables left free in [statement] *)
+    ; hash : string
+          (** short hex digest of [statement]; the [confirm_extraction] tactic
+              recomputes it from the live goal to detect upstream drift. The
+              plugin MUST hash the same string the same way. *)
     }
 end
+
+(* Short, stable digest of the printed goal statement. Keep in lockstep with the
+   confirm_extraction plugin (it hashes the same string with the same function). *)
+let statement_hash s = String.sub (Digest.to_hex (Digest.string s)) 0 12
 
 (* Print an EConstr fully explicit (implicits on, notations off) for round-trip
    safety, restoring the printing flags afterwards. *)
@@ -286,6 +294,7 @@ let extract_goal_impl ~(st : t) () =
       { Extract.statement
       ; intro_names = section_vars @ local_names
       ; section_vars
+      ; hash = statement_hash statement
       })
 
 let extract_goal ~token ~st =
