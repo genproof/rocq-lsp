@@ -123,9 +123,22 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
   let body =
     match sec with
     | Some (_, sec_name) ->
+      (* Force [<name>_Goal] to be discharged over EVERY section variable, in
+         declaration order, even ones the statement doesn't mention -- by binding
+         a tuple of them all in a [let]. This pins its arity to exactly
+         [length section_vars], so the proof file can reference it as
+         [<name>_Goal <svs...>] without having to predict which variables Coq's
+         section discharge would otherwise keep. *)
+      let stmt =
+        match ex.section_vars with
+        | [] -> ex.statement
+        | svs ->
+          Printf.sprintf "let _force := (%s) in\n%s"
+            (String.concat ", " svs) ex.statement
+      in
       Printf.sprintf
         "Section %s.\n%s\nDefinition %s_Goal : Prop :=\n%s.\nEnd %s.\n" sec_name
-        preamble name ex.statement sec_name
+        preamble name stmt sec_name
     | None ->
       Printf.sprintf "Definition %s_Goal : Prop :=\n%s.\n" name ex.statement
   in
@@ -146,18 +159,20 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
       match sec with
       | Some (_, sec_name) ->
         (* IN-SECTION proof: reconstruct the enclosing section (its variables and
-           local helper lemmas, verbatim) and define the Goal locally, so that
-           relocated tactics referencing section-local helpers resolve against
-           the SAME in-section signatures -- helpers take the section variables
-           implicitly via the section context, NOT as extra leading arguments
-           (which is what an OUTSIDE-section proof would force, shifting the
-           positional args and failing with "expected nat"/"expected <var type>").
-           After [End], [<name>_proof] discharges to [forall <svs>, <name>_Goal
-           <svs>], exactly the type the caller's [eapply <name>_proof] expects.
-           Self-contained (the Goal is re-defined here, not Required from the goal
-           module) so the re-declared helpers are not shadowed by imported
-           discharged copies. Intro only the proof-LOCAL hypotheses; the section
-           variables are ambient. *)
+           local helper lemmas, verbatim) so relocated tactics referencing
+           section-local helpers resolve against the SAME in-section signatures --
+           helpers take the section variables implicitly via the section context,
+           NOT as extra leading arguments (which is what an OUTSIDE-section proof
+           would force, shifting positional args and failing with "expected
+           nat"/"expected <var type>"). But we do NOT duplicate the (possibly
+           huge) goal statement here: instead reference [<name>_Goal] from the
+           goal module, applied to the section variables. We [Require] the goal
+           module WITHOUT [Import] and use the fully-qualified name, so its
+           discharged helper copies don't clash with the in-section helpers we
+           re-declare. After [End], [<name>_proof : forall <svs>, <goal_mod>.
+           <name>_Goal <svs>], convertible to [<name>_Goal] -- exactly the type
+           the caller's [eapply <name>_proof] expects. Intro only the proof-LOCAL
+           hypotheses; the section variables are ambient. *)
         let n_sec = List.length ex.section_vars in
         let rec drop n l =
           if n <= 0 then l
@@ -168,20 +183,26 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
           | [] -> "idtac"
           | l -> "intros " ^ String.concat " " l
         in
+        let goal_ref =
+          match ex.section_vars with
+          | [] -> Printf.sprintf "%s.%s_Goal" goal_mod name
+          | svs ->
+            Printf.sprintf "%s.%s_Goal %s" goal_mod name
+              (String.concat " " svs)
+        in
         Printf.sprintf
           "%s\n\
+           Require %s.\n\n\
            Section %s.\n\
            %s\n\
-           Definition %s_Goal : Prop :=\n\
-           %s.\n\n\
-           Lemma %s_proof : %s_Goal.\n\
+           Lemma %s_proof : %s.\n\
            Proof.\n\
           \  %s.\n\
           \  (* VST: try [unfold abbreviate in *.] to restore the display. *)\n\
           \  (* Move the original tactics here to prove it for real. *)\n\
            Admitted.\n\
            End %s.\n"
-          requires sec_name preamble name ex.statement name name intros_local
+          requires goal_mod sec_name preamble name goal_ref intros_local
           sec_name
       | None ->
         (* No enclosing section: no section-local helpers to misalign, so the
