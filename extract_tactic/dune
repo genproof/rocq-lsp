@@ -1,0 +1,22 @@
+; coqc-loadable tactic plugin providing [confirm_extraction "<hash>"].
+; Generate the grammar .ml from the .mlg with coqpp (avoids needing dune's coq
+; extension), then build a normal Coq plugin library installed via coq-lsp.
+(rule
+ (targets g_confirm_extraction.ml)
+ (deps (:mlg g_confirm_extraction.mlg))
+ (action (run coqpp %{mlg})))
+
+(library
+ (name coq_lsp_confirm_extraction)
+ (public_name coq-lsp.confirm-extraction)
+ (synopsis "coqc tactic: confirm_extraction <hash> (staleness check)")
+ (modules g_confirm_extraction confirm_extraction)
+ (wrapped false)
+ (flags (:standard -w -27-32-33-37-39))
+ (libraries
+  coq-core.kernel
+  coq-core.engine
+  coq-core.interp
+  coq-core.printing
+  coq-core.tactics
+  coq-core.plugins.ltac))
