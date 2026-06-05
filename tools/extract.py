@@ -30,25 +30,32 @@ import json, subprocess, os, sys, argparse
 SRV = os.environ.get("COQLSP", "coq-lsp")
 
 
-def annotate_source(path, line_1, name, proof_module, apply_with):
+CONFIRM_ML = 'coq-lsp.confirm-extraction'
+
+
+def annotate_source(path, line_1, name, proof_module, apply_with, hash_):
     """Insert commented Require + delegation hints into the source file, right
-    above the extraction line, so it is obvious how to wire in the lemma.
-    Comments only -- compiles unchanged. Returns False if skipped."""
+    above the extraction line, so it is obvious how to wire in the lemma. The
+    hint includes a [confirm_extraction "<hash>"] tripwire (errors at coqc if the
+    goal here later drifts from what was extracted). Comments only -- compiles
+    unchanged. Returns False if skipped."""
     lines = open(path).read().split("\n")
     idx = line_1 - 1
     if not (0 <= idx < len(lines)):
         return False
     # Skip if a hint block is already here (re-run lands on the inserted block,
     # which has shifted the original line down).
-    if any("coq-lsp extract" in l for l in lines[max(0, idx - 1):idx + 5]):
+    if any("coq-lsp extract" in l for l in lines[max(0, idx - 1):idx + 7]):
         return False
     src = lines[idx]
     indent = src[: len(src) - len(src.lstrip())]
     block = [
-        f"{indent}(* --- coq-lsp extract: this goal is now {name}_proof.v --- *)",
-        f"{indent}(* 1. add near the top of this file:  Require Import {proof_module}. *)",
+        f"{indent}(* --- coq-lsp extract: this goal is now {name}_proof.v (hash {hash_}) --- *)",
+        f'{indent}(* 1. near the top of this file:'
+        f'  Declare ML Module "{CONFIRM_ML}".',
+        f"{indent}                       Require Import {proof_module}. *)",
         f"{indent}(* 2. replace the tactic block below with: *)",
-        f"{indent}(* {apply_with}; try eassumption. *)",
+        f'{indent}(* confirm_extraction "{hash_}". {apply_with}; try eassumption. *)',
     ]
     lines[idx:idx] = block
     open(path, "w").write("\n".join(lines))
@@ -137,7 +144,8 @@ def main():
         proof_module = (gm[:-len("_goal")] + "_proof") if gm.endswith("_goal") \
             else a.name + "_proof"
         apply_with = res.get("apply_with", "eapply " + a.name + "_proof")
-        if annotate_source(f, a.line, a.name, proof_module, apply_with):
+        hash_ = res.get("hash", "")
+        if annotate_source(f, a.line, a.name, proof_module, apply_with, hash_):
             print("annotated %s at line %d" % (a.file, a.line), file=sys.stderr)
         else:
             print("annotate: skipped (out of range or already annotated)",

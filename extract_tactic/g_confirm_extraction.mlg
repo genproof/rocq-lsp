@@ -1,0 +1,10 @@
+DECLARE PLUGIN "coq-lsp.confirm-extraction"
+
+{
+open Ltac_plugin
+open Stdarg
+}
+
+TACTIC EXTEND confirm_extraction
+| [ "confirm_extraction" string(h) ] -> { Confirm_extraction.confirm h }
+END

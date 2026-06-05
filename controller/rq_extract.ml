@@ -209,6 +209,8 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
     ; ("regenerated_goal", `Bool true)
     ; ("created_proof", `Bool created_proof)
     ; ("apply_with", `String (Printf.sprintf "eapply %s_proof" name))
+    ; ("hash", `String ex.hash)
+    ; ("confirm_with", `String (Printf.sprintf "confirm_extraction \"%s\"" ex.hash))
     ]
 
 let extract ~name () ~token ~doc ~point =
