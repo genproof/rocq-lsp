@@ -1,0 +1,12 @@
+(rule
+ (copy ../../tools/extract.py extract.py))
+
+(cram
+ (deps
+  (source_tree proj)
+  extract.py
+  (package coq-stdlib)
+  (package coq-lsp)
+  %{bin:fcc}
+  %{bin:coqc}
+  %{bin:coq-lsp}))

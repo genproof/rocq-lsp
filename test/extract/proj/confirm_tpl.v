@@ -1,0 +1,12 @@
+Declare ML Module "coq-lsp.confirm-extraction".
+Section S.
+Variable n : nat.
+Hypothesis Hn : n = 5.
+Lemma helper : forall k, k = n -> k + n = 10.
+Proof. intros k Hk. subst k. rewrite Hn. reflexivity. Qed.
+Lemma target : n + n = 10.
+Proof.
+  confirm_extraction "__HASH__".
+  apply (helper n). reflexivity.
+Qed.
+End S.
