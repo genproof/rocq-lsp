@@ -38,13 +38,23 @@ Cross-tool: the extracted hash, fed to confirm_extraction at the same goal, pass
   $ grep -q STALE proj/confirm.diags && echo STALE || echo crosstool_ok
   crosstool_ok
 
-The section proof is reconstructed IN-SECTION (Section .. End around the lemma):
+The section proof is reconstructed IN-SECTION (Section .. End around the lemma)
+but does NOT duplicate the goal statement: it Requires the goal module (no Import,
+to avoid clashing with the re-declared in-section helpers) and references the goal
+applied to the section variables -- including Hn, which the statement never mentions
+(the forcing [let] in the goal file pins the arity so this reference is well-typed):
   $ grep -c "^Section S\." proj/tg_proof.v
   1
   $ grep -c "^End S\." proj/tg_proof.v
   1
-  $ grep -c "^Lemma tg_proof : tg_Goal" proj/tg_proof.v
-  1
+  $ grep -c "Definition tg_Goal" proj/tg_proof.v || true
+  0
+  $ grep -oE "^Require T\.tg_goal\." proj/tg_proof.v
+  Require T.tg_goal.
+  $ grep -oE "Lemma tg_proof : T\.tg_goal\.tg_Goal n Hn" proj/tg_proof.v
+  Lemma tg_proof : T.tg_goal.tg_Goal n Hn
+  $ grep -oE "let _force := \(n, Hn\) in" proj/tg_goal.v
+  let _force := (n, Hn) in
 
 Re-extraction is deterministic (identical hash across runs):
   $ H1=$(python3 extract.py proj/m.v 8 3 d1 --root proj --skip-annotations 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['hash'])")
