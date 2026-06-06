@@ -16,9 +16,29 @@ let write_file path s =
   output_string oc s;
   close_out oc
 
+let ends_with sfx s =
+  let ls = String.length s and lf = String.length sfx in
+  ls >= lf && String.sub s (ls - lf) lf = sfx
+
+(* A generated goal/proof file must not [Require] a [*_proof] module (a goal/proof
+   statement never needs one, and proofs [Require] their own goal back, so it can
+   form a require cycle), nor its OWN [<name>_goal] (a direct self-cycle:
+   "Cannot load a library with the same name as the current one"). It CAN, however,
+   legitimately reference ANOTHER [*_goal] module -- e.g. a nested goal extracted
+   from a [*_proof] whose lemma is stated as [other_goal.Other_Goal ...] unfolds to
+   mention [other_goal]'s discharged constants -- so those requires are kept.
+   Decide per dotted/space-separated token. *)
+let requires_extraction_module ~name s =
+  let self_goal = name ^ "_goal" in
+  let toks =
+    List.concat_map (String.split_on_char '.') (String.split_on_char ' ' s)
+  in
+  List.exists (fun t -> String.equal t self_goal || ends_with "_proof" t) toks
+
 (* Collect the import preamble (Require/From/Import/Export/Open Scope) up to the
-   cursor line, so the generated files have the globals in scope. *)
-let collect_requires ~(contents : Contents.t) ~upto_line =
+   cursor line, so the generated files have the globals in scope. We drop any
+   line importing a [*_proof] module or this extraction's own goal (see above). *)
+let collect_requires ~name ~(contents : Contents.t) ~upto_line =
   let lines = contents.lines in
   let n = min (Array.length lines) (upto_line + 1) in
   let pfx p s =
@@ -29,8 +49,9 @@ let collect_requires ~(contents : Contents.t) ~upto_line =
     let l = lines.(i) in
     let s = String.trim l in
     if
-      pfx "Require" s || pfx "From " s || pfx "Import " s || pfx "Export " s
-      || pfx "Open Scope" s
+      (pfx "Require" s || pfx "From " s || pfx "Import " s || pfx "Export " s
+      || pfx "Open Scope" s)
+      && not (requires_extraction_module ~name s)
     then (
       Buffer.add_string buf l;
       Buffer.add_char buf '\n')
@@ -97,6 +118,64 @@ let copy_preamble ~(lines : string array) ~a ~b =
   done;
   Buffer.contents buf
 
+let find_substr s sub start =
+  let ls = String.length s and lsub = String.length sub in
+  let rec go i =
+    if i + lsub > ls then None
+    else if String.sub s i lsub = sub then Some i
+    else go (i + 1)
+  in
+  go (max 0 start)
+
+let is_ident_char c =
+  (c >= 'a' && c <= 'z')
+  || (c >= 'A' && c <= 'Z')
+  || (c >= '0' && c <= '9')
+  || c = '_'
+
+(* First whole-word occurrence of [w] in [s] at/after [start] (boundaries are
+   non-identifier characters), so e.g. "intros" does not match "Intros"/"sintros". *)
+let find_word s w start =
+  let lw = String.length w and ls = String.length s in
+  let rec go i =
+    match find_substr s w i with
+    | None -> None
+    | Some j ->
+      if
+        (j = 0 || not (is_ident_char s.[j - 1]))
+        && (j + lw >= ls || not (is_ident_char s.[j + lw]))
+      then Some j
+      else go (j + 1)
+  in
+  go (max 0 start)
+
+(* On re-extraction the proof file is NOT regenerated (it may hold real work), but
+   its leading [intros] can go stale: if the goal gained/lost/renamed hypotheses,
+   the recorded binder names no longer match. Rewrite the first [intros ...] of the
+   main [Lemma <name>_proof] to [intros_text] (the current binders), leaving the
+   rest of the body untouched. The tactic spans from the [intros] keyword to the
+   first following [.]. Returns true if it rewrote something. *)
+let update_proof_intros ~proof_path ~name ~intros_text =
+  let ic = open_in proof_path in
+  let s = really_input_string ic (in_channel_length ic) in
+  close_in ic;
+  match find_substr s (Printf.sprintf "Lemma %s_proof" name) 0 with
+  | None -> false
+  | Some a -> (
+    match find_word s "intros" a with
+    | None -> false
+    | Some i -> (
+      match String.index_from_opt s (i + String.length "intros") '.' with
+      | None -> false
+      | Some j ->
+        let s' =
+          String.sub s 0 i ^ intros_text ^ String.sub s j (String.length s - j)
+        in
+        if String.equal s' s then false
+        else (
+          write_file proof_path s';
+          true)))
+
 let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
   let main_path = Lang.LUri.File.to_string_file doc.uri in
   let dir = Filename.dirname main_path in
@@ -108,7 +187,9 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
   (* Real imports precede any Section; bounding the scan there avoids capturing
      prose inside in-proof comments (e.g. a line starting "From H35: ..."). *)
   let req_bound = match sec with Some (l, _) -> l | None -> upto in
-  let requires = collect_requires ~contents:doc.contents ~upto_line:req_bound in
+  let requires =
+    collect_requires ~name ~contents:doc.contents ~upto_line:req_bound
+  in
   let goal_mod = module_name_of_path goal_path in
   (* If the goal lives in a Section, reconstruct that section (its variables AND
      definitions) so that both the goal AND any moved proof's references to
@@ -119,6 +200,19 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
     match sec with
     | Some (sec_line, _) -> copy_preamble ~lines ~a:(sec_line + 1) ~b:lemma_line
     | None -> ""
+  in
+  (* The proof intros only the proof-LOCAL hypotheses; the section variables are
+     ambient (and the goal is applied to them). [intros_text] (no trailing dot)
+     is shared by the fresh skeleton and by the re-extraction intros refresh. *)
+  let n_sec = List.length ex.section_vars in
+  let rec drop n l =
+    if n <= 0 then l else match l with [] -> [] | _ :: tl -> drop (n - 1) tl
+  in
+  let local_intros = drop n_sec ex.intro_names in
+  let intros_text =
+    match local_intros with
+    | [] -> "idtac"
+    | l -> "intros " ^ String.concat " " l
   in
   let body =
     match sec with
@@ -152,76 +246,67 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
       requires body
   in
   write_file goal_path goal_src;
-  (* Proof file: created only if absent (may contain real work). *)
+  (* Proof file: created only if absent (it may contain real work). On
+     re-extraction (file already present) we leave the body alone but refresh its
+     leading [intros] to the current binders -- see [update_proof_intros]. *)
   let created_proof = not (Sys.file_exists proof_path) in
-  if created_proof then (
-    let proof_src =
-      match sec with
-      | Some (_, sec_name) ->
-        (* IN-SECTION proof: reconstruct the enclosing section (its variables and
-           local helper lemmas, verbatim) so relocated tactics referencing
-           section-local helpers resolve against the SAME in-section signatures --
-           helpers take the section variables implicitly via the section context,
-           NOT as extra leading arguments (which is what an OUTSIDE-section proof
-           would force, shifting positional args and failing with "expected
-           nat"/"expected <var type>"). But we do NOT duplicate the (possibly
-           huge) goal statement here: instead reference [<name>_Goal] from the
-           goal module, applied to the section variables. We [Require] the goal
-           module WITHOUT [Import] and use the fully-qualified name, so its
-           discharged helper copies don't clash with the in-section helpers we
-           re-declare. After [End], [<name>_proof : forall <svs>, <goal_mod>.
-           <name>_Goal <svs>], convertible to [<name>_Goal] -- exactly the type
-           the caller's [eapply <name>_proof] expects. Intro only the proof-LOCAL
-           hypotheses; the section variables are ambient. *)
-        let n_sec = List.length ex.section_vars in
-        let rec drop n l =
-          if n <= 0 then l
-          else match l with [] -> [] | _ :: tl -> drop (n - 1) tl
-        in
-        let intros_local =
-          match drop n_sec ex.intro_names with
-          | [] -> "idtac"
-          | l -> "intros " ^ String.concat " " l
-        in
-        let goal_ref =
-          match ex.section_vars with
-          | [] -> Printf.sprintf "%s.%s_Goal" goal_mod name
-          | svs ->
-            Printf.sprintf "%s.%s_Goal %s" goal_mod name
-              (String.concat " " svs)
-        in
-        Printf.sprintf
-          "%s\n\
-           Require %s.\n\n\
-           Section %s.\n\
-           %s\n\
-           Lemma %s_proof : %s.\n\
-           Proof.\n\
-          \  %s.\n\
-          \  (* VST: try [unfold abbreviate in *.] to restore the display. *)\n\
-          \  (* Move the original tactics here to prove it for real. *)\n\
-           Admitted.\n\
-           End %s.\n"
-          requires goal_mod sec_name preamble name goal_ref intros_local
-          sec_name
-      | None ->
-        (* No enclosing section: no section-local helpers to misalign, so the
-           proof simply Requires the (regenerated) goal module. *)
-        let intros =
-          match ex.intro_names with
-          | [] -> "idtac"
-          | l -> "intros " ^ String.concat " " l
-        in
-        Printf.sprintf
-          "%s\n\
-           Require Import %s.\n\n\
-           Lemma %s_proof : %s_Goal.\n\
-           Proof.\n\
-          \  %s.\n\
-           Admitted.\n"
-          requires goal_mod name name intros
-    in
-    write_file proof_path proof_src);
+  let updated_intros =
+    if created_proof then (
+      let proof_src =
+        match sec with
+        | Some (_, sec_name) ->
+          (* IN-SECTION proof: reconstruct the enclosing section (its variables
+             and local helper lemmas, verbatim) so relocated tactics referencing
+             section-local helpers resolve against the SAME in-section signatures
+             -- helpers take the section variables implicitly via the section
+             context, NOT as extra leading arguments (which is what an
+             OUTSIDE-section proof would force, shifting positional args and
+             failing with "expected nat"/"expected <var type>"). But we do NOT
+             duplicate the (possibly huge) goal statement here: instead reference
+             [<name>_Goal] from the goal module, applied to the section variables.
+             We [Require] the goal module WITHOUT [Import] and use the
+             fully-qualified name, so its discharged helper copies don't clash
+             with the in-section helpers we re-declare. After [End], [<name>_proof
+             : forall <svs>, <goal_mod>.<name>_Goal <svs>], convertible to
+             [<name>_Goal] -- exactly the type the caller's [eapply <name>_proof]
+             expects. *)
+          let goal_ref =
+            match ex.section_vars with
+            | [] -> Printf.sprintf "%s.%s_Goal" goal_mod name
+            | svs ->
+              Printf.sprintf "%s.%s_Goal %s" goal_mod name
+                (String.concat " " svs)
+          in
+          Printf.sprintf
+            "%s\n\
+             Require %s.\n\n\
+             Section %s.\n\
+             %s\n\
+             Lemma %s_proof : %s.\n\
+             Proof.\n\
+            \  %s.\n\
+            \  (* VST: try [unfold abbreviate in *.] to restore the display. *)\n\
+            \  (* Move the original tactics here to prove it for real. *)\n\
+             Admitted.\n\
+             End %s.\n"
+            requires goal_mod sec_name preamble name goal_ref intros_text
+            sec_name
+        | None ->
+          (* No enclosing section: no section-local helpers to misalign, so the
+             proof simply Requires the (regenerated) goal module. *)
+          Printf.sprintf
+            "%s\n\
+             Require Import %s.\n\n\
+             Lemma %s_proof : %s_Goal.\n\
+             Proof.\n\
+            \  %s.\n\
+             Admitted.\n"
+            requires goal_mod name name intros_text
+      in
+      write_file proof_path proof_src;
+      false)
+    else update_proof_intros ~proof_path ~name ~intros_text
+  in
   `Assoc
     [ ("goal_file", `String goal_path)
     ; ("proof_file", `String proof_path)
@@ -229,6 +314,7 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
     ; ("n_binders", `Int (List.length ex.intro_names))
     ; ("regenerated_goal", `Bool true)
     ; ("created_proof", `Bool created_proof)
+    ; ("updated_proof_intros", `Bool updated_intros)
     ; ("apply_with", `String (Printf.sprintf "eapply %s_proof" name))
     ; ("hash", `String ex.hash)
     ; ("confirm_with", `String (Printf.sprintf "confirm_extraction \"%s\"" ex.hash))
