@@ -22,7 +22,7 @@ Then:  coqc -R <root>/src lzma <name>_goal.v && coqc ... <name>_proof.v
        (to fully prove it, paste the original tactics into <name>_proof.v
         before `Admitted` and change it to `Qed`.)
 """
-import json, subprocess, os, sys, argparse
+import json, subprocess, os, sys, argparse, re
 
 # The coq-lsp server to drive. Defaults to the `coq-lsp` on PATH (e.g. an
 # opam-installed one, which has `coq/extract` once this branch is installed).
@@ -33,20 +33,42 @@ SRV = os.environ.get("COQLSP", "coq-lsp")
 CONFIRM_ML = 'coq-lsp.confirm-extraction'
 
 
+_HASH_PATS = [
+    re.compile(r'(confirm_extraction\s+")[0-9a-f]+(")'),
+    re.compile(r'(\(hash )[0-9a-f]+(\))'),
+]
+
+
 def annotate_source(path, line_1, name, proof_module, apply_with, hash_):
-    """Insert commented Require + delegation hints into the source file, right
-    above the extraction line, so it is obvious how to wire in the lemma. The
-    hint includes a [confirm_extraction "<hash>"] tripwire (errors at coqc if the
-    goal here later drifts from what was extracted). Comments only -- compiles
-    unchanged. Returns False if skipped."""
+    """Wire the [confirm_extraction "<hash>"] tripwire near the extraction line.
+
+    If a [confirm_extraction] is ALREADY present near the extraction point (an
+    active delegation, or a previously-inserted hint block), just refresh the
+    recorded hash IN PLACE -- do not insert another comment block. Otherwise
+    insert a commented Require + delegation hint block (comments only; the file
+    still compiles). Returns one of "updated"/"unchanged"/"inserted"/None."""
     lines = open(path).read().split("\n")
     idx = line_1 - 1
     if not (0 <= idx < len(lines)):
-        return False
-    # Skip if a hint block is already here (re-run lands on the inserted block,
-    # which has shifted the original line down).
-    if any("coq-lsp extract" in l for l in lines[max(0, idx - 1):idx + 7]):
-        return False
+        return None
+    # A window wide enough to catch the hint block (5 lines) whether the cursor is
+    # on the original tactic (block inserted below it) or on the inserted block.
+    lo, hi = max(0, idx - 7), min(len(lines), idx + 8)
+    if any("confirm_extraction" in lines[i] for i in range(lo, hi)):
+        changed = False
+        for i in range(lo, hi):
+            new = lines[i]
+            for pat in _HASH_PATS:
+                new = pat.sub(r"\g<1>" + hash_ + r"\g<2>", new)
+            if new != lines[i]:
+                lines[i] = new
+                changed = True
+        if changed:
+            open(path, "w").write("\n".join(lines))
+        return "updated" if changed else "unchanged"
+    # A leftover hint block with no confirm line (unusual): don't double-insert.
+    if any("coq-lsp extract" in lines[i] for i in range(lo, hi)):
+        return None
     src = lines[idx]
     indent = src[: len(src) - len(src.lstrip())]
     block = [
@@ -59,7 +81,7 @@ def annotate_source(path, line_1, name, proof_module, apply_with, hash_):
     ]
     lines[idx:idx] = block
     open(path, "w").write("\n".join(lines))
-    return True
+    return "inserted"
 
 
 def main():
@@ -145,11 +167,14 @@ def main():
             else a.name + "_proof"
         apply_with = res.get("apply_with", "eapply " + a.name + "_proof")
         hash_ = res.get("hash", "")
-        if annotate_source(f, a.line, a.name, proof_module, apply_with, hash_):
-            print("annotated %s at line %d" % (a.file, a.line), file=sys.stderr)
-        else:
-            print("annotate: skipped (out of range or already annotated)",
-                  file=sys.stderr)
+        outcome = annotate_source(f, a.line, a.name, proof_module, apply_with,
+                                  hash_)
+        msg = {
+            "inserted": "annotated %s at line %d" % (a.file, a.line),
+            "updated": "refreshed confirm_extraction hash in place in %s" % a.file,
+            "unchanged": "confirm_extraction already up to date in %s" % a.file,
+        }.get(outcome, "annotate: skipped (out of range) in %s" % a.file)
+        print(msg, file=sys.stderr)
 
 
 if __name__ == "__main__":
