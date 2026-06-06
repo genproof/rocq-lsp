@@ -95,3 +95,69 @@ Annotation is idempotent (re-running does not insert a second block):
   $ python3 extract.py proj/noann.v 8 3 na --root proj --skip-annotations >/dev/null 2>&1
   $ diff proj/noann.v proj/m.v && echo unchanged
   unchanged
+
+A generated goal file never re-imports a sibling _goal/_proof module. cyc.v
+imports T.cyc_goal; extracting with name cyc regenerates cyc_goal.v -- without the
+collect_requires filter that line would be copied in, so cyc_goal.v would import
+itself ("Cannot load a library with the same name as the current one"):
+  $ chmod +w proj/cyc_goal.v
+  $ coqc -R proj T proj/cyc_goal.v 2>&1
+  $ python3 extract.py proj/cyc.v 4 3 cyc --root proj --skip-annotations >/dev/null 2>&1
+  $ grep -c "cyc_goal" proj/cyc_goal.v || true
+  0
+  $ coqc -R proj T proj/cyc_goal.v 2>&1 && echo cyc_ok
+  cyc_ok
+
+But a DIFFERENT _goal module is kept (an extracted goal may reference it), while a
+_proof module is always dropped. cross.v imports T.dep_goal and T.aux_proof;
+extracting cr must keep dep_goal and drop aux_proof:
+  $ coqc -R proj T proj/dep_goal.v 2>&1 && coqc -R proj T proj/aux_proof.v 2>&1
+  $ python3 extract.py proj/cross.v 5 3 cr --root proj --skip-annotations >/dev/null 2>&1
+  $ grep -oE "Require Import T\.dep_goal" proj/cr_goal.v
+  Require Import T.dep_goal
+  $ grep -c "aux_proof" proj/cr_goal.v || true
+  0
+  $ coqc -R proj T proj/cr_goal.v 2>&1 && echo cross_ok
+  cross_ok
+
+Re-extraction refreshes the first [intros] of an existing _proof.v to the new
+binders, keeping the rest of the body. upd_v1 has hyps [a b Hab]; upd_v2 adds [c].
+First extraction creates the skeleton (intros a b Hab):
+  $ cp proj/upd_v1.v proj/upd.v && chmod +w proj/upd.v
+  $ python3 extract.py proj/upd.v 4 3 upd --root proj --skip-annotations 2>/dev/null | grep -oE "\"(created_proof|updated_proof_intros)\": (true|false)"
+  "created_proof": true
+  "updated_proof_intros": false
+  $ grep -oE "intros a b Hab" proj/upd_proof.v
+  intros a b Hab
+Simulate hand-written proof work in the body, then re-extract the changed goal:
+  $ sed -i 's/Admitted\./idtac "KEEP_BODY". Admitted./' proj/upd_proof.v
+  $ cp proj/upd_v2.v proj/upd.v
+  $ python3 extract.py proj/upd.v 4 3 upd --root proj --skip-annotations 2>/dev/null | grep -oE "\"(created_proof|updated_proof_intros)\": (true|false)"
+  "created_proof": false
+  "updated_proof_intros": true
+The first intros is updated to the new binders, and the body is preserved:
+  $ grep -oE "intros a b c Hab" proj/upd_proof.v
+  intros a b c Hab
+  $ grep -c "KEEP_BODY" proj/upd_proof.v || true
+  1
+  $ coqc -R proj T proj/upd_goal.v >/dev/null 2>&1 && coqc -R proj T proj/upd_proof.v >/dev/null 2>&1 && echo upd_ok
+  upd_ok
+
+Re-running annotation at an existing confirm_extraction refreshes the hash IN PLACE
+(no second comment block). Annotate once, corrupt the recorded hash to simulate
+goal drift, then re-extract -- the hash is restored and there is still one block:
+  $ cp proj/m.v proj/wann.v && chmod +w proj/wann.v
+  $ python3 extract.py proj/wann.v 8 3 wann --root proj 2>/dev/null | grep -oE "\"hash\": \"[^\"]*\""
+  "hash": "d3d48680b6ac"
+  $ grep -c "coq-lsp extract: this goal is now" proj/wann.v
+  1
+  $ sed -i 's/d3d48680b6ac/000000000000/g' proj/wann.v
+  $ grep -oE "confirm_extraction \"000000000000\"" proj/wann.v
+  confirm_extraction "000000000000"
+  $ python3 extract.py proj/wann.v 13 3 wann --root proj >/dev/null 2>&1
+  $ grep -c "coq-lsp extract: this goal is now" proj/wann.v
+  1
+  $ grep -oE "confirm_extraction \"d3d48680b6ac\"" proj/wann.v
+  confirm_extraction "d3d48680b6ac"
+  $ grep -c "000000000000" proj/wann.v || true
+  0
