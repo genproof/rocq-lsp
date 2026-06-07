@@ -162,12 +162,14 @@ goal drift, then re-extract -- the hash is restored and there is still one block
   $ grep -c "000000000000" proj/wann.v || true
   0
 
-coq/extract FAILS EXPLICITLY (rather than the client blocking forever) when the
-proof is broken upstream of the extraction point. proj/err.v has a bad [apply
-no_such_lemma] before the goal we ask to extract; the server returns a request
-error, so extract.py reports it and exits non-zero -- and writes no goal file:
+extract.py FAILS FAST (exit 2) when an error is reported before the extraction
+point, rather than blocking on coq/extract's postponed reply (which on a big file
+does not arrive until the whole document is checked). proj/err.v has a bad [apply
+no_such_lemma] before the goal we ask to extract; extract.py watches diagnostics,
+sees the upstream error and bails immediately, writing no goal file. (coq/extract
+itself also returns an error -- a backstop for other clients.)
   $ python3 extract.py proj/err.v 4 3 eb --root proj --skip-annotations >/dev/null 2>&1
-  [1]
+  [2]
   $ python3 extract.py proj/err.v 4 3 eb --root proj --skip-annotations 2>&1 | grep -o "error before the extraction point"
   error before the extraction point
   $ test -e proj/eb_goal.v && echo created || echo no_goal_file

@@ -30,6 +30,19 @@ import json, subprocess, os, sys, argparse, re
 SRV = os.environ.get("COQLSP", "coq-lsp")
 
 
+def errors_before(diags, line0, char0):
+    """Error-severity (LSP severity 1) diagnostics whose start is strictly before
+    the 0-indexed (line0, char0) extraction point -- i.e. broken sentences
+    upstream of it. Their presence means coq/extract cannot produce a sound goal."""
+    def start(d):
+        st = (d.get("range") or {}).get("start") or {}
+        return (st.get("line", 0), st.get("character", 0))
+    out = [d for d in (diags or [])
+           if d.get("severity") == 1 and start(d) < (line0, char0)]
+    out.sort(key=start)
+    return out
+
+
 CONFIRM_ML = 'coq-lsp.confirm-extraction'
 
 
@@ -128,11 +141,24 @@ def main():
             body += ch
         return json.loads(body)
 
-    def wait(i):
+    def wait(i, extract_pos=None):
+        """Wait for the response to request [i]. If [extract_pos] is given, also
+        watch published diagnostics and bail out the MOMENT an error is reported
+        before the extraction point. coq/extract is a postponed request: it does
+        not answer until the document is checked up to the point (minutes on a big
+        file), but a single broken sentence upstream already dooms the extraction
+        -- so fail fast instead of waiting. Returns the response dict, None on EOF,
+        or {"errors_before": [...]} on a fast-fail."""
         while True:
             m = readmsg()
             if m is None:
                 return None
+            if extract_pos is not None \
+                    and m.get("method") == "textDocument/publishDiagnostics":
+                errs = errors_before((m.get("params") or {}).get("diagnostics"),
+                                     *extract_pos)
+                if errs:
+                    return {"errors_before": errs}
             if m.get("id") == i and ("result" in m or "error" in m):
                 return m
 
@@ -144,11 +170,12 @@ def main():
     send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
           "params": {"textDocument": {"uri": uri, "languageId": "coq",
                                       "version": 1, "text": open(f).read()}}})
+    extract_pos = (a.line - 1, a.col - 1)
     send({"jsonrpc": "2.0", "id": 2, "method": "coq/extract",
           "params": {"textDocument": {"uri": uri},
-                     "position": {"line": a.line - 1, "character": a.col - 1},
+                     "position": {"line": extract_pos[0], "character": extract_pos[1]},
                      "name": a.name}})
-    r = wait(2)
+    r = wait(2, extract_pos=extract_pos)
     send({"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}})
     send({"jsonrpc": "2.0", "method": "exit", "params": {}})
     try:
@@ -156,6 +183,20 @@ def main():
     except Exception:
         p.kill()
 
+    if r is not None and "errors_before" in r:
+        errs = r["errors_before"]
+        print("FAILED: %d error%s before the extraction point (%s:%d:%d); fix the "
+              "proof before extracting:"
+              % (len(errs), "" if len(errs) == 1 else "s", a.file, a.line, a.col),
+              file=sys.stderr)
+        for d in errs[:20]:
+            st = d["range"]["start"]
+            msg = (d.get("message") or "").strip().splitlines()
+            print("  %s:%d:%d: %s" % (a.file, st["line"] + 1, st["character"] + 1,
+                                      msg[0] if msg else ""), file=sys.stderr)
+        if len(errs) > 20:
+            print("  ... and %d more" % (len(errs) - 20), file=sys.stderr)
+        sys.exit(2)
     if not r or "result" not in r:
         print("FAILED:", json.dumps(r), file=sys.stderr)
         sys.exit(1)
