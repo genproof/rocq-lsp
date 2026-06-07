@@ -320,17 +320,53 @@ let generate ~(doc : Doc.t) ~point ~name (ex : Coq.State.Extract.t) =
     ; ("confirm_with", `String (Printf.sprintf "confirm_extraction \"%s\"" ex.hash))
     ]
 
+(* Error-severity diagnostics whose range starts strictly before [point]
+   (0-indexed [line, character]) -- i.e. broken sentences UPSTREAM of the
+   extraction point. The goal we would extract is the proof state at [point],
+   which depends on every sentence before it, so any such error makes the
+   extracted goal unsound (or absent). *)
+let errors_before ~doc ~point =
+  let pl, pc = point in
+  let before (d : _ Lang.Diagnostic.t) =
+    if not (Lang.Diagnostic.is_error d) then false
+    else
+      let { Lang.Range.start; _ } = d.Lang.Diagnostic.range in
+      let { Lang.Point.line; character; _ } = start in
+      line < pl || (line = pl && character < pc)
+  in
+  List.filter before (Fleche.Doc.diags doc)
+
 let extract ~name () ~token ~doc ~point =
   let inner () =
-    let node = Info.LC.node ~doc ~point Info.Prev in
-    match node with
-    | None ->
-      Coq.Protect.E.ok (Error (Request.Error.make 1 "extract: no node at point"))
-    | Some node ->
-      let st = Doc.Node.state node in
-      let open Coq.Protect.E.O in
-      let+ ex = Coq.State.extract_goal ~token ~st in
-      Ok (generate ~doc ~point ~name ex)
+    (* [coq/extract] cannot produce a sound goal from a proof that is broken
+       upstream of the extraction point. Historically the handler proceeded
+       anyway and the request produced no usable reply, leaving clients (e.g.
+       tools/extract.py) blocked forever waiting on it. Fail explicitly instead,
+       reporting how many errors precede the point and where the first one is. *)
+    match errors_before ~doc ~point with
+    | err :: _ as errs ->
+      let n = List.length errs in
+      let { Lang.Range.start; _ } = err.Lang.Diagnostic.range in
+      let { Lang.Point.line; character; _ } = start in
+      let msg =
+        Printf.sprintf
+          "extract: %d error%s before the extraction point (first at line %d, \
+           column %d); fix the proof before extracting"
+          n
+          (if n = 1 then "" else "s")
+          (line + 1) (character + 1)
+      in
+      Coq.Protect.E.ok (Error (Request.Error.make 1 msg))
+    | [] -> (
+      match Info.LC.node ~doc ~point Info.Prev with
+      | None ->
+        Coq.Protect.E.ok
+          (Error (Request.Error.make 1 "extract: no node at point"))
+      | Some node ->
+        let st = Doc.Node.state node in
+        let open Coq.Protect.E.O in
+        let+ ex = Coq.State.extract_goal ~token ~st in
+        Ok (generate ~doc ~point ~name ex))
   in
   let lines = Fleche.Doc.lines doc in
   Request.R.of_execution ~lines ~name:"extract" ~f:inner ()
