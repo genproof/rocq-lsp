@@ -362,6 +362,16 @@ let open_ ~io ~token ~env ~uri ~languageId ~raw ~version =
   let reason = Reason.OpenDocument in
   Check.schedule ~uri ~reason
 
+(* Reload a fully-checked document from its on-disk [.vof] snapshot instead of
+   re-elaborating it.  The marshaled [Doc.t] restores every span/state, so the
+   document is immediately registered as completed (no [Check.schedule]); a
+   subsequent [didChange] then re-checks only the edited tail. *)
+let load_vof ~io ~token ~uri =
+  let in_file = Lang.LUri.File.to_string_file uri in
+  let doc = Doc.doc_of_disk ~in_file in
+  Handle.create ~uri ~doc;
+  Register.Completed.fire ~io ~token ~doc
+
 let change ~io:_ ~token ~(doc : Doc.t) ~version ~raw =
   let uri = doc.uri in
   Io.Log.trace "bump file" "%a / version: %d" Lang.LUri.File.pp uri version;

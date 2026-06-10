@@ -312,6 +312,15 @@ let do_close params =
   let uri = Helpers.get_uri params in
   Fleche.Theory.close ~uri
 
+(* [coq/loadVof] notification: reload a document from its sibling [.vof]
+   snapshot instead of re-checking it.  Wrapped so a corrupt / missing / stale
+   snapshot logs and is ignored rather than crashing the processing loop -- the
+   client falls back to a normal didOpen. *)
+let do_load_vof ~io ~token params =
+  let uri = Helpers.get_uri params in
+  try Fleche.Theory.load_vof ~io ~token ~uri
+  with exn -> L.trace "coq/loadVof" "load failed: %s" (Printexc.to_string exn)
+
 let do_trace params =
   let trace = string_field "value" params in
   match Fleche.Io.TraceValue.of_string trace with
@@ -454,6 +463,7 @@ let do_document ~params =
   do_document_request_maybe ~params ~handler
 
 let do_save_vo = do_document_request_maybe ~handler:Rq_save.request
+let do_save_vof = do_document_request_maybe ~handler:Rq_save.request_vof
 let do_lens = do_document_request_maybe ~handler:Rq_lens.request
 
 (* could be smarter *)
@@ -616,6 +626,7 @@ let dispatch_notification ~io ~ofn ~token ~state ~method_ ~params : unit =
   (* Specific to coq-lsp *)
   | "coq/viewRange" -> do_viewRange params
   | "coq/trimCaches" -> do_cache_trim ~io
+  | "coq/loadVof" -> do_load_vof ~io ~token params
   | "coq/workspace_update" -> do_workspace_update ~ofn_rq
   (* Cancel Request *)
   | "$/cancelRequest" -> do_cancel ~ofn_rq ~params
@@ -654,6 +665,7 @@ let dispatch_request ~token ~method_ ~params : Rq.Action.t =
   | "proof/goals" -> do_goals ~params
   (* Proof-specific stuff *)
   | "coq/saveVo" -> do_save_vo ~params
+  | "coq/saveVof" -> do_save_vof ~params
   | "coq/extract" -> do_extract ~params
   (* Coq specific stuff *)
   | "coq/getDocument" -> do_document ~params
