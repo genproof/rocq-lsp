@@ -26,3 +26,16 @@ let request ~token ~doc =
     Ok `Null
   in
   Request.R.of_execution ~lines ~name:"save" ~f ()
+
+(* Like [request] but writes the Flèche [.vof] document snapshot (every span and
+   state) instead of a Coq [.vo].  Used by the [coq/saveVof] request to persist
+   a warm document so a fresh server can reload it via [coq/loadVof] instead of
+   re-checking. *)
+let request_vof ~token ~doc =
+  let open Coq.Protect.E.O in
+  let lines = Fleche.Doc.lines doc in
+  let f () =
+    let+ () = Fleche.Doc.save_vof ~token ~doc in
+    Ok `Null
+  in
+  Request.R.of_execution ~lines ~name:"save_vof" ~f ()
