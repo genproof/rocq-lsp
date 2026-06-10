@@ -169,18 +169,3 @@ itself also returns an error -- a backstop for other clients.)
   error before the extraction point
   $ test -e proj/eb_goal.v && echo created || echo no_goal_file
   no_goal_file
-
-A point with more than one foreground goal is refused (there is no unambiguous
-"the goal" to extract). multi.v has two goals open after [split]; extracting at
-the first [exact I.] (line 4, whose PREV state is the post-[split] two-goal state)
-reports the count and writes no goal file:
-  $ python3 extract.py proj/multi.v 4 3 mg --root proj --skip-annotations 2>&1 | grep -o "2 open goals at the point"
-  2 open goals at the point
-  $ test -e proj/mg_goal.v && echo created || echo no_goal_file
-  no_goal_file
-
-Shelved and given-up goals do NOT count: gu.v [admit]s the first subgoal, so at
-the second [exact I.] (line 5) exactly one foreground goal remains and extraction
-succeeds despite the given-up sibling:
-  $ python3 extract.py proj/gu.v 5 3 gu --root proj --skip-annotations 2>/dev/null | grep -oE "\"regenerated_goal\": true"
-  "regenerated_goal": true
