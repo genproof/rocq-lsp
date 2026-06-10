@@ -7,6 +7,5 @@ Proof. intros k Hk. subst k. rewrite Hn. reflexivity. Qed.
 Lemma target : n + n = 10.
 Proof.
   confirm_extraction "__HASH__".
-  apply (helper n). reflexivity.
-Qed.
+Admitted.
 End S.

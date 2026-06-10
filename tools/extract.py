@@ -33,52 +33,45 @@ SRV = os.environ.get("COQLSP", "coq-lsp")
 CONFIRM_ML = 'coq-lsp.confirm-extraction'
 
 
-_HASH_PATS = [
-    re.compile(r'(confirm_extraction\s+")[0-9a-f]+(")'),
-    re.compile(r'(\(hash )[0-9a-f]+(\))'),
-]
+_CONFIRM_PAT = re.compile(r'(confirm_extraction\s+")[0-9a-f]+(")')
 
 
 def annotate_source(path, line_1, name, proof_module, apply_with, hash_):
-    """Wire the [confirm_extraction "<hash>"] tripwire near the extraction line.
+    """Wire the [confirm_extraction "<hash>"] tripwire at the extraction site.
 
-    If a [confirm_extraction] is ALREADY present near the extraction point (an
-    active delegation, or a previously-inserted hint block), just refresh the
-    recorded hash IN PLACE -- do not insert another comment block. Otherwise
-    insert a commented Require + delegation hint block (comments only; the file
-    still compiles). Returns one of "updated"/"unchanged"/"inserted"/None."""
+    Re-extraction (the cursor is on -- or just before -- an existing
+    [confirm_extraction] tactic): refresh the hash on THAT line in place; nothing
+    else. Fresh extraction: replace the goal's tactic with an active
+    [confirm_extraction "<hash>"] (it admits the goal and guards staleness) and
+    insert an explanatory comment block above it. Returns
+    "updated"/"unchanged"/"inserted"/None."""
     lines = open(path).read().split("\n")
     idx = line_1 - 1
     if not (0 <= idx < len(lines)):
         return None
-    # A window wide enough to catch the hint block (5 lines) whether the cursor is
-    # on the original tactic (block inserted below it) or on the inserted block.
-    lo, hi = max(0, idx - 7), min(len(lines), idx + 8)
-    if any("confirm_extraction" in lines[i] for i in range(lo, hi)):
-        changed = False
-        for i in range(lo, hi):
-            new = lines[i]
-            for pat in _HASH_PATS:
-                new = pat.sub(r"\g<1>" + hash_ + r"\g<2>", new)
-            if new != lines[i]:
-                lines[i] = new
-                changed = True
-        if changed:
-            open(path, "w").write("\n".join(lines))
-        return "updated" if changed else "unchanged"
-    # A leftover hint block with no confirm line (unusual): don't double-insert.
-    if any("coq-lsp extract" in lines[i] for i in range(lo, hi)):
-        return None
+    # Request: when called on (or right before) a confirm_extraction line, just
+    # update the hash on that line -- do not scan a window or insert anything.
+    for j in (idx, idx + 1):
+        if 0 <= j < len(lines) and "confirm_extraction" in lines[j]:
+            new = _CONFIRM_PAT.sub(r"\g<1>" + hash_ + r"\g<2>", lines[j])
+            if new != lines[j]:
+                lines[j] = new
+                open(path, "w").write("\n".join(lines))
+                return "updated"
+            return "unchanged"
+    # Fresh site.
     src = lines[idx]
     indent = src[: len(src) - len(src.lstrip())]
     block = [
-        f"{indent}(* --- coq-lsp extract: this goal is now {name}_proof.v (hash {hash_}) --- *)",
-        f'{indent}(* 1. near the top of this file:'
-        f'  Declare ML Module "{CONFIRM_ML}".',
+        f"{indent}(* --- coq-lsp extract: this goal is now extracted to {name}_proof.v --- *)",
+        f"{indent}(* `confirm_extraction` tactic is here to ensure the extracted goal is up to date. It admits the goal. *)",
+        f"{indent}(* To wire it add: *)",
+        f'{indent}(* 1. near the top of this file:  Declare ML Module "{CONFIRM_ML}".',
         f"{indent}                       Require Import {proof_module}. *)",
-        f"{indent}(* 2. replace the tactic block below with: *)",
-        f'{indent}(* confirm_extraction "{hash_}". {apply_with}; try eassumption. *)',
+        f"{indent}(* 2. replace the `confirm_extraction` tactic with *)",
+        f"{indent}(* {apply_with}; try eassumption. *)",
     ]
+    lines[idx] = f'{indent}confirm_extraction "{hash_}".'
     lines[idx:idx] = block
     open(path, "w").write("\n".join(lines))
     return "inserted"

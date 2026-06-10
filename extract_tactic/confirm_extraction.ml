@@ -4,7 +4,10 @@
    [it_mkNamedProd_or_LetIn], leaving the ambient section variables free; print
    fully explicit with notations off; hash the printed string). If the recorded
    hash differs from the live one the extraction is stale -> the tactic fails,
-   so [coqc] errors at exactly the extraction site.
+   so [coqc] errors at exactly the extraction site. On a match it [give_up]s
+   (admits) the goal, so the recorded site reads just [confirm_extraction "<h>"]
+   -- no separate [admit.] -- and the goal is discharged (the enclosing proof
+   must be [Admitted], exactly as for the [admit] it replaces).
 
    The closing/printing/hash MUST stay in lockstep with coq/state.ml. *)
 
@@ -47,7 +50,7 @@ let confirm (expected : string) : unit Proofview.tactic =
       in
       let closed = EConstr.it_mkNamedProd_or_LetIn sigma concl local in
       let h = statement_hash (print_explicit genv sigma closed) in
-      if String.equal h expected then Proofview.tclUNIT ()
+      if String.equal h expected then Proofview.give_up
       else
         Tacticals.tclZEROMSG
           (Pp.str
