@@ -60,6 +60,7 @@ module GoalsAnswer : sig
     ; program : JCoq.State.Proof.Program.t Names.Id.Map.t option [@default None]
     ; messages : 'pp Message.t list
     ; error : 'pp option [@default None]
+    ; pretac_messages : 'pp Message.t list [@default []]
     }
   [@@deriving to_yojson]
 end

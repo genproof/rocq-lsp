@@ -70,17 +70,34 @@ let get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac () =
   let open Fleche in
   let node = Info.LC.node ~doc ~point mode in
   match node with
-  | None -> Coq.Protect.E.ok (None, None)
+  | None -> Coq.Protect.E.ok (None, None, [])
   | Some node ->
     let open Coq.Protect.E.O in
     let st = Doc.Node.state node in
     (* XXX: Get the location from node *)
     let loc = None in
-    let* st = run_pretac ~token ~loc ~st pretac in
+    (* Run the speculative [pretac] against the node's state and *capture
+       the feedback it produces* (e.g. the output of a [Check] / [Print] /
+       [Search] vernac, which Coq emits as feedback).  Normally this
+       feedback is discarded; we surface it as [pretac_messages] so a
+       client can run a query against the live document state at a point
+       without re-elaborating a truncated copy of the file.  [feedback] is
+       readable on the [Protect.E.t] private record; it is empty when
+       [pretac = None], so the ordinary goals path is unaffected. *)
+    let pretac_res = run_pretac ~token ~loc ~st pretac in
+    let lines = Doc.lines doc in
+    let pretac_messages =
+      List.map
+        (fun m ->
+          Doc.Node.Message.feedback_to_message ~lines m
+          |> Lsp.JFleche.Message.of_coq_message)
+        pretac_res.Coq.Protect.E.feedback
+    in
+    let* st = pretac_res in
     let pr = pp ~pp_format in
     let+ goals = Info.Goals.goals ~token ~pr ~compact ~st in
     let program = Info.Goals.program ~st in
-    (goals, Some program)
+    (goals, Some program, pretac_messages)
 
 let get_node_info ~doc ~point ~mode =
   let open Fleche in
@@ -101,7 +118,7 @@ let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
     Lang.Point.{ line = fst point; character = snd point; offset = -1 }
   in
   let open Coq.Protect.E.O in
-  let+ goals, program =
+  let+ goals, program, pretac_messages =
     get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac ()
   in
   let range, messages, error = get_node_info ~doc ~point ~mode in
@@ -110,7 +127,15 @@ let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
     to_yojson
       (fun x -> x)
       pp_msg
-      { textDocument; position; range; goals; program; messages; error })
+      { textDocument
+      ; position
+      ; range
+      ; goals
+      ; program
+      ; messages
+      ; error
+      ; pretac_messages
+      })
   |> Result.ok
 
 let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
