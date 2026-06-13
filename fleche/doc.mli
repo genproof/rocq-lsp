@@ -30,6 +30,11 @@ module Node : sig
 
   module Message : sig
     type t = Lang.Range.t Coq.Message.t
+
+    (** [feedback_to_message ~lines fb] resolves a raw feedback message's
+        [Loc.t] locations to document [Lang.Range.t]s. *)
+    val feedback_to_message :
+      lines:string array -> Loc.t Coq.Message.t -> t
   end
 
   type t = private
