@@ -1,11 +1,11 @@
 ; coqc-loadable tactic plugin providing [confirm_extraction "<hash>"].
-; Generate the grammar .ml from the .mlg with coqpp (avoids needing dune's coq
-; extension), then build a normal Coq plugin library installed via coq-lsp.
-(rule
- (targets g_confirm_extraction.ml)
- (deps (:mlg g_confirm_extraction.mlg))
- (action (run coqpp %{mlg})))
-
+;
+; Rocq 9 port: opam's rocq-runtime installs neither the coqpp binary nor a
+; coqpp findlib library, so the grammar .ml cannot be generated at build
+; time.  g_confirm_extraction.ml is CHECKED IN, generated from the sibling
+; .mlg with Coq 8.20's coqpp (the output uses only stable plugin API:
+; Mltop/Tacentries/Stdarg/Genarg).  Regenerate with any coqpp if the .mlg
+; changes.  Library names follow the 9.x rename (coq-core -> rocq-runtime).
 (library
  (name coq_lsp_confirm_extraction)
  (public_name coq-lsp.confirm-extraction)
@@ -14,9 +14,9 @@
  (wrapped false)
  (flags (:standard -w -27-32-33-37-39))
  (libraries
-  coq-core.kernel
-  coq-core.engine
-  coq-core.interp
-  coq-core.printing
-  coq-core.tactics
-  coq-core.plugins.ltac))
+  rocq-runtime.kernel
+  rocq-runtime.engine
+  rocq-runtime.interp
+  rocq-runtime.printing
+  rocq-runtime.tactics
+  rocq-runtime.plugins.ltac))
