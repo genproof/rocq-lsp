@@ -104,6 +104,10 @@ module GoalsAnswer = struct
     ; program : JCoq.State.Proof.Program.t Names.Id.Map.t option [@default None]
     ; messages : 'pp Message.t list
     ; error : 'pp option [@default None]
+    ; pretac_messages : 'pp Message.t list [@default []]
+          (** Output (Check/Print/Search ...) produced by the speculative
+              [command]/[pretac] run against the node's state, kept separate
+              from the node's own [messages]. Empty when no pretac is given. *)
     }
   [@@deriving yojson]
 end

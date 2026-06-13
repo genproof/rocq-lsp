@@ -34,7 +34,15 @@ let get_goals ~token ~pr ~textDocument ~range ~state ~diags ~messages =
   let messages = mk_messages ~messages in
   let error = mk_error ~diags in
   Fleche_lsp.JFleche.GoalsAnswer.
-    { textDocument; position; range; goals; program; messages; error }
+    { textDocument
+    ; position
+    ; range
+    ; goals
+    ; program
+    ; messages
+    ; error
+    ; pretac_messages = []
+    }
 
 let of_execution (v : (_, _) Coq.Protect.E.t) =
   match v with
