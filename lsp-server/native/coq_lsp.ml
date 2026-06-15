@@ -112,10 +112,33 @@ end = struct
       close_out oc
 end
 
+(* Per-sentence wall-clock watchdog.  Document checking runs on its own thread
+   (see [process_queue] / [Thread.create] below); this thread independently
+   watches the shared heartbeat and, when a single sentence overruns
+   [Config.sentence_timeout], raises Coq's interrupt so the sentence aborts.
+   That is the same cross-thread interrupt an incoming message triggers via
+   [set_current_token] -- here it is driven by a clock instead.  Cheap poll;
+   a no-op whenever [sentence_timeout] is [0.0] or no sentence is in flight. *)
+let rec sentence_watchdog () =
+  let budget = !Fleche.Config.v.sentence_timeout in
+  let beat = Fleche.Sentence_timer.started_at () in
+  (* Poll at 50ms precision only while a sentence is actually in flight under an
+     active budget; back off to 200ms otherwise to keep an idle server quiet. *)
+  if budget > 0.0 && beat > 0.0 then begin
+    if Unix.gettimeofday () -. beat > budget then Fleche.Sentence_timer.fire ();
+    Thread.delay 0.05
+  end
+  else Thread.delay 0.2;
+  sentence_watchdog ()
+
 let lsp_main bt coqlib findlib_config ocamlpath vo_load_path require_libraries
     delay int_backend lsp_trace lsp_trace_file record_comments =
   Coq.Limits.select_best int_backend;
   Coq.Limits.start ();
+
+  (* Start the per-sentence watchdog (idle until a client sets
+     [sentence_timeout] > 0 via initializationOptions / didChangeConfiguration). *)
+  let (_ : Thread.t) = Thread.create sentence_watchdog () in
 
   (* Try to be sane w.r.t. \r\n in Windows *)
   Stdlib.set_binary_mode_in stdin true;
