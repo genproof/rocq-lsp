@@ -983,9 +983,11 @@ let document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
     in
     (* A per-sentence watchdog timeout surfaces as a generic [Interrupted] (it
        raises Coq's interrupt flag, see [Sentence_timer]); reify it into a
-       recoverable "Timeout!" [User] error so this sentence gets a diagnostic
-       and checking CONTINUES (strategy_of_coq_err on [User] is [Continue]),
-       instead of stopping the whole document as a real cancellation does. *)
+       recoverable [User] error so this sentence gets a diagnostic and checking
+       CONTINUES (strategy_of_coq_err on [User] is [Continue]), instead of
+       stopping the whole document as a real cancellation does.  The message is
+       deliberately self-identifying ("rocq-lsp: sentence timeout ...") so it is
+       not confused with Coq's own [Timeout] vernac. *)
     let process_res =
       match process_res.Coq.Protect.E.r with
       | Coq.Protect.R.Interrupted when Sentence_timer.timed_out_p () ->
@@ -993,7 +995,11 @@ let document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
            re-arming interrupt does not abort recovery too. *)
         Sentence_timer.idle ();
         Sentence_timer.clear ();
-        Coq.Protect.E.error (Coq.Pp_t.str "Timeout!")
+        Coq.Protect.E.error
+          (Coq.Pp_t.str
+             (Printf.sprintf
+                "rocq-lsp: sentence timeout (exceeded %gs sentence_timeout)"
+                !Config.v.sentence_timeout))
       | _ -> process_res
     in
     let f = Coq.Utils.to_range ~lines in
