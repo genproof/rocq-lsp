@@ -116,3 +116,12 @@ let name () =
   M.name ()
 
 let available = true
+
+(* Raise Coq's polled interrupt flag directly, without consuming a token.  Coq
+   aborts the currently-running computation at its next [check_for_interrupt]
+   point (the same flag a cancellation token sets via [Token.set]).  Used by the
+   per-sentence document watchdog, which must interrupt the running sentence but
+   leave the (shared) check token untouched so checking can continue afterwards.
+   Safe to call from another thread: it is a single boolean write that the Coq
+   thread polls. *)
+let interrupt () = Control.interrupt := true

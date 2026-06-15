@@ -94,6 +94,13 @@ type t =
   ; unicode_completion : Completion.Unicode.Mode.t option [@default None]
         (** deprecated, use [completion.unicode.enabled] *)
   ; max_errors : int [@default 150]
+  ; sentence_timeout : float [@default 0.0]
+        (** Per-sentence wall-clock budget (seconds) for document checking.
+            When [> 0.0], a single sentence that runs longer than this is
+            aborted (a watchdog thread raises Coq's interrupt) and reported as a
+            "Timeout!" error, after which checking continues with the next
+            sentence.  [0.0] (the default) disables it -- some proofs have
+            legitimately minutes-long sentences. *)
   ; pp_type : int [@default 0]
         (** Pretty-printing type in Info Panel Request, 0 = string; 1 = Pp.t; 2
             = Coq Layout Engine *)
@@ -143,6 +150,7 @@ let default =
   ; debug = false
   ; unicode_completion = None
   ; max_errors = 150
+  ; sentence_timeout = 0.0
   ; pp_type = 0
   ; show_stats_on_hover = false
   ; show_loc_info_on_hover = false
