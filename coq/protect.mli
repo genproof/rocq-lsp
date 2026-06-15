@@ -50,6 +50,11 @@ module E : sig
   val ok : 'a -> ('a, 'l) t
   val error : Pp.t -> ('a, 'l) t
 
+  (** [timeout t f] runs [f] under a wall-clock budget of [t] seconds (Coq's
+      [Control.timeout]); on expiry the result is a [User] "Timeout!" error.
+      Bounds a whole multi-sentence run with a single budget. *)
+  val timeout : float -> (unit -> ('a, 'l) t) -> ('a, 'l) t
+
   module O : sig
     val ( let+ ) : ('a, 'l) t -> ('a -> 'b) -> ('b, 'l) t
     val ( let* ) : ('a, 'l) t -> ('a -> ('b, 'l) t) -> ('b, 'l) t

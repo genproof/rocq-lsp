@@ -28,6 +28,7 @@ let string_field name dict = U.to_string (field name dict)
 let ofield name dict = List.(assoc_opt name dict)
 let obool_field name dict = Option.map U.to_bool (ofield name dict)
 let ostring_field name dict = Option.map U.to_string (ofield name dict)
+let ofloat_field name dict = Option.map U.to_number (ofield name dict)
 
 module Lsp = Fleche_lsp
 module L = Fleche.Io.Log
@@ -395,6 +396,8 @@ let get_compact params = Option.default true (obool_field "compact" params)
 let get_pretac params =
   Option.append (ostring_field "command" params) (ostring_field "pretac" params)
 
+let get_pretac_timeout params = ofloat_field "command_timeout" params
+
 let get_goals_mode_from_config () =
   if !Fleche.Config.v.goal_after_tactic then Fleche.Info.PrevIfEmpty
   else Fleche.Info.Prev
@@ -413,7 +416,10 @@ let do_goals ~params =
   let compact = get_compact params in
   let mode = get_goals_mode params in
   let pretac = get_pretac params in
-  let handler = Rq_goals.goals ~pp_format ~compact ~mode ~pretac () in
+  let pretac_timeout = get_pretac_timeout params in
+  let handler =
+    Rq_goals.goals ~pp_format ~compact ~mode ~pretac ?pretac_timeout ()
+  in
   do_position_request ~postpone:true ~handler ~params
 
 let do_extract ~params =
