@@ -981,6 +981,21 @@ let document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
     let process_res, info =
       interp_and_info ~token ~parsing_time ~st ~files ~doc ast
     in
+    (* A per-sentence watchdog timeout surfaces as a generic [Interrupted] (it
+       raises Coq's interrupt flag, see [Sentence_timer]); reify it into a
+       recoverable "Timeout!" [User] error so this sentence gets a diagnostic
+       and checking CONTINUES (strategy_of_coq_err on [User] is [Continue]),
+       instead of stopping the whole document as a real cancellation does. *)
+    let process_res =
+      match process_res.Coq.Protect.E.r with
+      | Coq.Protect.R.Interrupted when Sentence_timer.timed_out_p () ->
+        (* Disarm the watchdog BEFORE the recovery below runs Coq again, so the
+           re-arming interrupt does not abort recovery too. *)
+        Sentence_timer.idle ();
+        Sentence_timer.clear ();
+        Coq.Protect.E.error (Coq.Pp_t.str "Timeout!")
+      | _ -> process_res
+    in
     let f = Coq.Utils.to_range ~lines in
     let { Coq.Protect.E.r; feedback } = Coq.Protect.E.map_loc ~f process_res in
     match r with
@@ -1070,6 +1085,8 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
       in
       set_completion ~completed doc_handle doc
     | Continue -> (
+      (* Arm the per-sentence watchdog for this sentence (parse + exec). *)
+      Sentence_timer.bump ();
       (* Parsing *)
       if Debug.parsing then Io.Log.trace "coq" "parsing sentence";
       let lines = doc.contents.lines in
@@ -1110,6 +1127,8 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
   in
   Stats.Global.restore stats;
   let doc = stm doc st last_tok last_node 0 in
+  (* Disarm the per-sentence watchdog now that we are between checks. *)
+  Sentence_timer.idle ();
   (* Set the document to "finished" mode: reverse the node list *)
   let doc = { doc with nodes = List.rev doc.nodes } in
   doc
