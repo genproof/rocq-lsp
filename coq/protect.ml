@@ -113,6 +113,18 @@ module E = struct
   let ok v = { r = Completed (Ok v); feedback = [] }
   let error err = { r = R.error err; feedback = [] }
 
+  (* Run [f] under a wall-clock [timeout] (seconds), using Coq's [Control.timeout]
+     (the same mechanism as the [Timeout] vernac).  When the alarm fires, the
+     [Timeout] exception is raised inside [f] and reified by [eval_exn] into a
+     [User] error result; if it instead escapes [f], [Control.timeout] returns
+     [None] and we build the error here.  Unlike the [Timeout]/[timeout]
+     surface syntax, this bounds a whole multi-sentence run with a SINGLE
+     budget (and accepts a float). *)
+  let timeout (t : float) (f : unit -> ('a, 'l) t) : ('a, 'l) t =
+    match Control.timeout t f () with
+    | Some r -> r
+    | None -> error Pp.(str "Timeout!")
+
   module O = struct
     let ( let+ ) x f = map ~f x
     let ( let* ) x f = bind ~f x

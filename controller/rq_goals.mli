@@ -13,13 +13,17 @@ type format =
   | Str
   | Box
 
-(** [goals ~pp_format ?pretac] Serve goals at point; users can request
-    pre-processing and formatting using the provided parameters. *)
+(** [goals ~pp_format ?pretac ?pretac_timeout] Serve goals at point; users can
+    request pre-processing and formatting using the provided parameters.
+    [pretac_timeout] (seconds) bounds the whole [pretac] run with a single
+    wall-clock budget so a slow/diverging speculative tactic fails cleanly
+    instead of wedging the server. *)
 val goals :
      pp_format:format
   -> compact:bool
   -> mode:Fleche.Info.approx
   -> pretac:string option
+  -> ?pretac_timeout:float
   -> unit
   -> (Yojson.Safe.t, string) Request.position
 

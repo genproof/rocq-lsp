@@ -61,12 +61,17 @@ let pp_msgs ~pp_format =
   | Str | Box -> fun x -> `String (Coq.Pp_t.to_string x)
   | Pp -> fun x -> Lsp.JCoq.Pp_t.to_yojson x
 
-let run_pretac ~token ~loc ~st pretac =
+let run_pretac ~token ~loc ~st ?timeout pretac =
   match pretac with
   | None -> Coq.Protect.E.ok st
-  | Some tac -> Fleche.Doc.run ~token ?loc ~st tac
+  | Some tac ->
+    let run () = Fleche.Doc.run ~token ?loc ~st tac in
+    (match timeout with
+    | None -> run ()
+    | Some t -> Coq.Protect.E.timeout t run)
 
-let get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac () =
+let get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac
+    ?pretac_timeout () =
   let open Fleche in
   let node = Info.LC.node ~doc ~point mode in
   match node with
@@ -84,7 +89,7 @@ let get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac () =
        without re-elaborating a truncated copy of the file.  [feedback] is
        readable on the [Protect.E.t] private record; it is empty when
        [pretac = None], so the ordinary goals path is unaffected. *)
-    let pretac_res = run_pretac ~token ~loc ~st pretac in
+    let pretac_res = run_pretac ~token ~loc ~st ?timeout:pretac_timeout pretac in
     let lines = Doc.lines doc in
     let pretac_messages =
       List.map
@@ -110,7 +115,8 @@ let get_node_info ~doc ~point ~mode =
   let error = Option.bind node mk_error in
   (range, messages, error)
 
-let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
+let goals ~pp_format ~compact ~mode ~pretac ?pretac_timeout () ~token ~doc ~point
+    =
   let open Fleche in
   let uri, version = (doc.Doc.uri, doc.version) in
   let textDocument = Lsp.Doc.VersionedTextDocumentIdentifier.{ uri; version } in
@@ -119,7 +125,8 @@ let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
   in
   let open Coq.Protect.E.O in
   let+ goals, program, pretac_messages =
-    get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac ()
+    get_goal_info ~pp_format ~compact ~token ~doc ~point ~mode ~pretac
+      ?pretac_timeout ()
   in
   let range, messages, error = get_node_info ~doc ~point ~mode in
   let pp_msg = pp_msgs ~pp_format in
@@ -138,7 +145,10 @@ let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
       })
   |> Result.ok
 
-let goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point =
+let goals ~pp_format ~compact ~mode ~pretac ?pretac_timeout () ~token ~doc ~point
+    =
   let lines = Fleche.Doc.lines doc in
-  let f () = goals ~pp_format ~compact ~mode ~pretac () ~token ~doc ~point in
+  let f () =
+    goals ~pp_format ~compact ~mode ~pretac ?pretac_timeout () ~token ~doc ~point
+  in
   Request.R.of_execution ~lines ~name:"goals" ~f ()
