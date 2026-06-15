@@ -39,3 +39,10 @@ val select : backend -> unit
 val select_best : backend option -> unit
 
 val create_atomic : unit -> Token.t
+
+(** [interrupt ()] raises Coq's polled interrupt flag, aborting the
+    currently-running Coq computation at its next check-for-interrupt point.
+    Same effect as a cancellation token's [set], but without consuming a token,
+    so checking can resume on the next sentence.  Used by the per-sentence
+    watchdog; safe to call from another thread. *)
+val interrupt : unit -> unit
