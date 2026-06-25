@@ -263,7 +263,19 @@ let extract_goal_impl ~(st : t) () =
     let Proof_.{ goals; sigma; _ } = Proof_.data pf in
     (match goals with
     | [] -> CErrors.user_err (Pp.str "extract: no goals")
-    | g :: _ ->
+    | _ :: _ :: _ ->
+      (* Extraction closes a single goal into one [<name>_Goal]; with several
+         foreground goals open there is no unambiguous "the goal" to extract, so
+         refuse and ask the caller to focus one. Only the foreground [goals]
+         count -- shelved and given-up goals live in separate fields and are
+         intentionally ignored. *)
+      CErrors.user_err
+        (Pp.str
+           (Printf.sprintf
+              "extract: %d open goals at the point; focus a single goal (e.g. \
+               with a bullet or { }) before extracting"
+              (List.length goals)))
+    | [ g ] ->
       let (Evd.EvarInfo evi) = Evd.find sigma g in
       let genv = Global.env () in
       let fenv = Evd.evar_filtered_env genv evi in

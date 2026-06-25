@@ -86,9 +86,11 @@ module Extract : sig
     }
 end
 
-(** [extract_goal ~token ~st] closes the first open goal of [st] into a single
+(** [extract_goal ~token ~st] closes the single open goal of [st] into a
     self-contained type (a [Definition]-ready string) plus the binder names for
-    a proof skeleton. Fails if there is no open proof / no goals. *)
+    a proof skeleton. Fails if there is no open proof, no goals, or more than one
+    foreground goal (shelved and given-up goals are ignored -- focus a single
+    goal before extracting). *)
 val extract_goal :
   token:Limits.Token.t -> st:t -> (Extract.t, Loc.t) Protect.E.t
 
