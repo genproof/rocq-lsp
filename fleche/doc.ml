@@ -881,6 +881,18 @@ let parse_action ~token ~lines ~st last_tok doc_handle =
     (fun () -> parse_action ~token ~lines ~st last_tok doc_handle)
     ()
 
+(* A proof-closing command (Qed / Defined / Save / Admitted): its cost is
+   kernel verification of the proof term, not a tactic that might diverge, so
+   it is exempt from the per-sentence [sentence_timeout] watchdog (see [stm]).
+   [VernacEndProof] also matches under controls like [Time Qed.], which leave
+   [expr] unchanged. *)
+let is_proof_closing_action = function
+  | Process ast -> (
+    match (Coq.Ast.to_coq ast).CAst.v.Vernacexpr.expr with
+    | Vernacexpr.VernacSynPure (Vernacexpr.VernacEndProof _) -> true
+    | _ -> false)
+  | EOF _ | Skip _ -> false
+
 (* Result of node-building action *)
 type document_action =
   | Stop of Completion.t * Node.t
@@ -1099,6 +1111,12 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
       let action, parsing_diags, parsing_feedback, parsing_time =
         parse_action ~token ~lines ~st last_tok doc_handle
       in
+      (* Now that we know the sentence, exempt a proof-closing command from the
+         per-sentence watchdog: its (parse is trivial; the cost is the kernel
+         type-check below) honest, possibly-long verification must not be
+         aborted as a "sentence timeout".  Disarm here, after the cheap parse;
+         the next sentence re-arms via [bump] at the top of the loop. *)
+      if is_proof_closing_action action then Sentence_timer.idle ();
       (* Execution *)
       let action =
         document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
