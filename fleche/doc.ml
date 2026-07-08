@@ -324,6 +324,17 @@ type t =
 (* Flatten the list of document asts *)
 let asts doc = List.filter_map Node.ast doc.nodes
 let diags doc = List.concat_map Node.diags doc.nodes
+
+(* Number of error diagnostics carried by the document's nodes.  The
+   [max_errors] budget is per *document* (see the [acc_errors] seeding in
+   [process_and_parse]); [Theory.Check] uses this to skip scheduling a doc
+   that is already over budget -- a run would halt without elaborating
+   anything. *)
+let error_count doc =
+  List.fold_left
+    (fun n node ->
+      n + Lang.Compat.List.count Lang.Diagnostic.is_error (Node.diags node))
+    0 doc.nodes
 let lines doc = doc.contents.lines
 
 (* TOC handling *)
@@ -1086,11 +1097,22 @@ let log_beyond_target last_tok target =
   Io.Log.trace "beyond_target" "target reached %a" Lang.Range.pp last_tok;
   Io.Log.trace "beyond_target" "target is %a" Target.pp target
 
+let max_errors_msg = "Maximum number of errors reached"
+
 let max_errors_node ~state ~range ~prev =
-  let msg = Coq.Pp_t.str "Maximum number of errors reached" in
+  let msg = Coq.Pp_t.str max_errors_msg in
   let parsing_diags = [ Diags.make range Diags.err msg ] in
   unparseable_node ~range ~prev ~parsing_diags ~parsing_feedback:[] ~state
     ~parsing_time:0.0
+
+(* Recognize a sentinel node so a resumed check can drop stale ones: they
+   mark a *previous* halt point and would otherwise linger mid-document
+   (and keep republishing) after checking has moved past them. *)
+let node_is_max_errors_sentinel (n : Node.t) =
+  List.exists
+    (fun (d : _ Lang.Diagnostic.t) ->
+      String.equal max_errors_msg (pp_to_string d.Lang.Diagnostic.message))
+    n.Node.diags
 
 module Stop_cond = struct
   type t =
@@ -1112,7 +1134,18 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
     report_progress ~io ~doc last_tok;
     match Stop_cond.should_stop acc_errors last_tok target with
     | Max_errors ->
-      let completed = Completion.Failed last_tok in
+      (* A max_errors halt is a *policy* stop, not a broken document: every
+         node processed so far is valid and resumption is well-defined, so we
+         complete as [Stopped] -- a later request past the halt (e.g. after
+         the client raises [max_errors]) resumes incrementally instead of
+         being postponed forever onto a document [check] refuses to touch.
+         [Failed] stays reserved for documents whose construction broke
+         ([bump_version] recreates those).  Note for clients: a request that
+         *caused* the halt and was then abandoned should be cancelled
+         ($/cancelRequest), otherwise its still-pending target re-schedules
+         the check, which -- error counting being per-run -- creeps one
+         error-region per pass toward EOF. *)
+      let completed = Completion.Stopped last_tok in
       let node = max_errors_node ~state:st ~range:last_tok ~prev in
       let doc = add_node ~node doc in
       set_completion ~completed doc_handle doc
@@ -1173,7 +1206,19 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
       (last_node, state, global_stats)
   in
   Stats.Global.restore stats;
-  let doc = stm doc st last_tok last_node 0 in
+  (* Errors are counted per *document*, not per run: a resumed check inherits
+     the retained nodes' error count, so [max_errors] means "errors in the
+     document".  In particular a doc halted at [max_errors = 0] can never
+     creep past its error when an abandoned request re-schedules it -- it
+     re-halts before elaborating anything (see also the over-budget
+     scheduling guard in [Theory.Check]). *)
+  let seed_errors =
+    List.fold_left
+      (fun n (node : Node.t) ->
+        n + Lang.Compat.List.count Lang.Diagnostic.is_error node.Node.diags)
+      0 doc.nodes
+  in
+  let doc = stm doc st last_tok last_node seed_errors in
   (* Disarm the per-sentence watchdog now that we are between checks. *)
   Sentence_timer.idle ();
   (* Set the document to "finished" mode: reverse the node list *)
@@ -1219,6 +1264,17 @@ let loc_after ~lines ~uri (r : Lang.Range.t) =
 
 (** Setup parser and call the main routine *)
 let resume_check ~io ~token ~(last_tok : Lang.Range.t) ~doc ~target =
+  (* Resuming past a max_errors halt: its sentinel node marked the (now
+     stale) halt point; drop it so it neither lingers mid-document nor keeps
+     being republished once checking continues. *)
+  let doc =
+    if List.exists node_is_max_errors_sentinel doc.nodes then
+      { doc with
+        nodes = List.filter (fun n -> not (node_is_max_errors_sentinel n)) doc.nodes
+      ; diags_dirty = true
+      }
+    else doc
+  in
   let uri, version, contents = (doc.uri, doc.version, doc.contents) in
   (* Compute resume point, basically [CLexer.after] + stream setup *)
   let lines = doc.contents.lines in
