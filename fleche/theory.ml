@@ -305,7 +305,14 @@ end = struct
     let requests = Handle.update_doc_info ~handle ~doc in
     if Doc.Completion.is_completed doc.completed then (
       Register.Completed.fire ~io ~token ~doc;
-      pending := pend_pop !pending);
+      pending := pend_pop !pending)
+    else
+      (* A run that stopped early (position target, or a max_errors halt --
+         now [Stopped], so [Completed] no longer fires for it) still
+         announces its accumulated diagnostics: non-eager clients would
+         otherwise never see the halt's errors.  With [eager_diagnostics]
+         this is a cheap redundant republish. *)
+      send_diags ~io ~token ~doc;
     (requests, doc)
 
   (* Notification handling; reply is optional / asynchronous *)
@@ -317,21 +324,36 @@ end = struct
       None
     in
     let f (handle : Handle.t) doc =
-      (* See if we have a fine-grain target to go *)
-      let target = get_check_target ~doc handle.pt_requests in
-      match target with
-      | None
-      (* If we are in lazy mode and we don't have any full document requests
-         pending, we just deschedule *)
-        when !Config.v.check_only_on_request && IS.is_empty handle.cp_requests
-        ->
-        Io.Log.trace "maybe_check" "nothing to do, descheduling";
+      (* A halted doc already over the (current) max_errors budget cannot
+         advance: error counting is per document, so a run would halt again
+         before elaborating anything.  Deschedule instead of spinning; its
+         postponed requests get another chance when the client raises
+         max_errors (the next request re-schedules) or edits the document. *)
+      let over_budget =
+        match doc.Doc.completed with
+        | Stopped _ -> Doc.error_count doc > !Config.v.max_errors
+        | Yes _ | Failed _ | WorkspaceUpdated _ -> false
+      in
+      if over_budget then (
+        Io.Log.trace "maybe_check" "over the max_errors budget, descheduling";
         pending := pend_pop !pending;
-        None
-      | (None | Some _) as tgt ->
-        let target = Stdlib.Option.value ~default:Doc.Target.End tgt in
-        Io.Log.trace "maybe_check" "building target %a" Doc.Target.pp target;
-        Some (do_check ~io ~token ~handle ~doc target)
+        None)
+      else
+        (* See if we have a fine-grain target to go *)
+        let target = get_check_target ~doc handle.pt_requests in
+        match target with
+        | None
+        (* If we are in lazy mode and we don't have any full document requests
+           pending, we just deschedule *)
+          when !Config.v.check_only_on_request && IS.is_empty handle.cp_requests
+          ->
+          Io.Log.trace "maybe_check" "nothing to do, descheduling";
+          pending := pend_pop !pending;
+          None
+        | (None | Some _) as tgt ->
+          let target = Stdlib.Option.value ~default:Doc.Target.End tgt in
+          Io.Log.trace "maybe_check" "building target %a" Doc.Target.pp target;
+          Some (do_check ~io ~token ~handle ~doc target)
     in
     Handle.with_doc ~kind ~uri ~default ~f
 

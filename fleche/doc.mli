@@ -116,6 +116,11 @@ val lines : t -> string Array.t
 (** Return the list of all diags in the doc *)
 val diags : t -> Coq.Pp_t.t Lang.Diagnostic.t list
 
+(** Number of error diagnostics in the doc.  The [max_errors] budget is per
+    document; the scheduler skips a doc already over budget (a run would halt
+    without elaborating anything). *)
+val error_count : t -> int
+
 (** Helper functions to analyze documents *)
 module Analysis : sig
   (** [find_proof_start node] returns [Some pnode] where [pnode] is the node
