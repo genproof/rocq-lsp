@@ -372,7 +372,7 @@ let load_vof ~io ~token ~uri =
   Handle.create ~uri ~doc;
   Register.Completed.fire ~io ~token ~doc
 
-let change ~io:_ ~token ~(doc : Doc.t) ~version ~raw =
+let change ~io ~token ~(doc : Doc.t) ~version ~raw =
   let uri = doc.uri in
   Io.Log.trace "bump file" "%a / version: %d" Lang.LUri.File.pp uri version;
   let tb = Unix.gettimeofday () in
@@ -382,6 +382,12 @@ let change ~io:_ ~token ~(doc : Doc.t) ~version ~raw =
   (* Just in case for the future, we update the document before requesting it to
      be checked *)
   let invalid = Handle.update_doc_version ~doc in
+  (* Re-announce the diagnostics retained from the common prefix at the new
+     version.  A position request inside that prefix is answered [Now] from the
+     retained nodes without any check running, so no other publish may ever
+     happen for this version: a client that clears diagnostics on didChange
+     would then see a retained error silently vanish (stale-green). *)
+  send_diags ~io ~token ~doc;
   let reason = Reason.ChangeDocument in
   Check.schedule ~uri ~reason;
   invalid
