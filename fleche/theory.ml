@@ -116,7 +116,11 @@ module Handle = struct
       let pt_requests = [] in
       let cp_requests = IS.empty in
       ({ handle with cp_requests; pt_requests }, wake_up)
-    | Stopped range ->
+    (* [Failed] is served like [Stopped]: a max_errors halt fails the doc,
+       but the nodes processed on the way are valid and [Request.add] already
+       answers [Now] from them ([request_in_range] treats both alike) -- a
+       request the check reached before halting must not hang forever. *)
+    | Stopped range | Failed range ->
       let fullfilled, delayed =
         List.partition
           (fun (_id, point) -> Doc.Target.reached ~range point)
@@ -124,7 +128,6 @@ module Handle = struct
       in
       let handle = { handle with pt_requests = delayed } in
       (handle, pt_ids fullfilled)
-    | Failed _ -> (handle, IS.empty)
     | WorkspaceUpdated _ -> (handle, IS.empty)
 
   (* trigger pending incremental requests *)
