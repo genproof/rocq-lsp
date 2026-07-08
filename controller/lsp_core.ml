@@ -451,6 +451,11 @@ let do_extract ~params =
 let do_definition =
   do_position_request ~postpone:true ~handler:Rq_definition.request
 
+(* Pull variant of $/coq/filePerfData: postponed to the requested position,
+   so it drives (and profiles) a prefix check without running the tail. *)
+let do_perf_data =
+  do_position_request ~postpone:true ~handler:Rq_perfdata.request
+
 let do_completion =
   do_position_request ~postpone:true ~handler:Rq_completion.completion
 
@@ -695,6 +700,7 @@ let dispatch_request ~io ~token ~method_ ~params : Rq.Action.t =
   | "coq/saveVof" -> do_save_vof ~params
   | "coq/loadVof" -> do_load_vof_rq ~io ~token ~params
   | "coq/extract" -> do_extract ~params
+  | "coq/getPerfData" -> do_perf_data ~params
   (* Coq specific stuff *)
   | "coq/getDocument" -> do_document ~params
   (* Petanque embedding *)
