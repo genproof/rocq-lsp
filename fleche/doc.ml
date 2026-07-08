@@ -489,6 +489,21 @@ let recreate ~token ~doc ~version ~contents =
   let env, uri, languageId = (doc.env, doc.uri, doc.languageId) in
   handle_doc_creation_exec ~token ~env ~uri ~languageId ~version ~contents
 
+(* Prefix of the diagnostic minted for a sentence aborted by the per-sentence
+   watchdog (see the [Sentence_timer] reification in [stm] below; kept
+   deliberately self-identifying).  Shared so the retention logic recognizes
+   exactly what the abort path mints. *)
+let sentence_timeout_prefix = "rocq-lsp: sentence timeout"
+
+let pp_to_string pp = Format.asprintf "%a" Coq.Pp_t.pp_with pp
+
+let node_has_sentence_timeout (n : Node.t) =
+  List.exists
+    (fun (d : _ Lang.Diagnostic.t) ->
+      Coq.Compat.Ocaml_413.String.starts_with ~prefix:sentence_timeout_prefix
+        (pp_to_string d.Lang.Diagnostic.message))
+    n.Node.diags
+
 let recover_up_to_offset ~init_range doc offset =
   Io.Log.trace "prefix" "common prefix offset found at %d" offset;
   let rec find acc_nodes acc_range nodes =
@@ -497,7 +512,16 @@ let recover_up_to_offset ~init_range doc offset =
     | n :: ns ->
       if Debug.scan then
         Io.Log.trace "scan" "consider node at %a" Lang.Range.pp n.Node.range;
-      if n.range.end_.offset >= offset then (List.rev acc_nodes, acc_range)
+      (* A sentence-timeout node is NOT retained (nor anything after it, whose
+         states derive from its recovery state): the abort is transient -- a
+         property of that run's budget and machine load, not of the document
+         -- so replaying it across versions would make one spurious timeout
+         permanently red for the session.  Cutting the prefix here forces the
+         aborted sentence to re-elaborate under the budget in effect at
+         re-check time (semantic error nodes are deterministic and stay
+         retained as before). *)
+      if n.range.end_.offset >= offset || node_has_sentence_timeout n then
+        (List.rev acc_nodes, acc_range)
       else find (n :: acc_nodes) n.range ns
   in
   find [] init_range doc.nodes
@@ -1009,9 +1033,8 @@ let document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
         Sentence_timer.clear ();
         Coq.Protect.E.error
           (Coq.Pp_t.str
-             (Printf.sprintf
-                "rocq-lsp: sentence timeout (exceeded %gs sentence_timeout)"
-                !Config.v.sentence_timeout))
+             (Printf.sprintf "%s (exceeded %gs sentence_timeout)"
+                sentence_timeout_prefix !Config.v.sentence_timeout))
       | _ -> process_res
     in
     let f = Coq.Utils.to_range ~lines in
