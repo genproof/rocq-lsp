@@ -316,11 +316,32 @@ let do_close params =
 (* [coq/loadVof] notification: reload a document from its sibling [.vof]
    snapshot instead of re-checking it.  Wrapped so a corrupt / missing / stale
    snapshot logs and is ignored rather than crashing the processing loop -- the
-   client falls back to a normal didOpen. *)
+   client falls back to a normal didOpen.  Compatibility form: new clients use
+   the request below, whose failure is observable. *)
 let do_load_vof ~io ~token params =
   let uri = Helpers.get_uri params in
   try Fleche.Theory.load_vof ~io ~token ~uri
   with exn -> L.trace "coq/loadVof" "load failed: %s" (Printexc.to_string exn)
+
+(* [coq/loadVof] request: like the notification, but the load is acked, so a
+   corrupt / incompatible snapshot (e.g. marshaled by a differently-built
+   binary) returns a RequestFailed error the client can react to with a cold
+   [didOpen] -- silently swallowing it left the client believing the document
+   was open and every later request on it answered "Document is not ready".
+   Answered directly, not routed through the document table: the document does
+   not exist yet, so a routed request would be cancelled before the handler
+   ran. *)
+let do_load_vof_rq ~io ~token ~params =
+  match
+    let uri = Helpers.get_uri params in
+    Fleche.Theory.load_vof ~io ~token ~uri
+  with
+  | () -> Rq.Action.now (Ok `Null)
+  | exception exn ->
+    let message = "coq/loadVof failed: " ^ Printexc.to_string exn in
+    L.trace "coq/loadVof" "%s" message;
+    (* -32803 = JSON-RPC RequestFailed *)
+    Rq.Action.error (-32803, message)
 
 let do_trace params =
   let trace = string_field "value" params in
@@ -651,7 +672,7 @@ let dispatch_state_notification ~io ~ofn ~token ~state ~method_ ~params :
     dispatch_notification ~io ~ofn ~token ~state ~method_ ~params;
     state
 
-let dispatch_request ~token ~method_ ~params : Rq.Action.t =
+let dispatch_request ~io ~token ~method_ ~params : Rq.Action.t =
   match method_ with
   (* Lifecyle *)
   | "initialize" ->
@@ -672,6 +693,7 @@ let dispatch_request ~token ~method_ ~params : Rq.Action.t =
   (* Proof-specific stuff *)
   | "coq/saveVo" -> do_save_vo ~params
   | "coq/saveVof" -> do_save_vof ~params
+  | "coq/loadVof" -> do_load_vof_rq ~io ~token ~params
   | "coq/extract" -> do_extract ~params
   (* Coq specific stuff *)
   | "coq/getDocument" -> do_document ~params
@@ -683,8 +705,8 @@ let dispatch_request ~token ~method_ ~params : Rq.Action.t =
     L.trace "no_handler" "%s" msg;
     Rq.Action.error (-32601, "method not found")
 
-let dispatch_request ~ofn_rq ~token ~id ~method_ ~params =
-  dispatch_request ~token ~method_ ~params |> Rq.serve ~ofn_rq ~token ~id
+let dispatch_request ~io ~ofn_rq ~token ~id ~method_ ~params =
+  dispatch_request ~io ~token ~method_ ~params |> Rq.serve ~ofn_rq ~token ~id
 
 let dispatch_message ~io ~ofn ~token ~state (com : Lsp.Base.Message.t) : State.t
     =
@@ -695,7 +717,7 @@ let dispatch_message ~io ~ofn ~token ~state (com : Lsp.Base.Message.t) : State.t
     dispatch_state_notification ~io ~ofn ~token ~state ~method_ ~params
   | Request { id; method_; params } ->
     L.trace "process_queue" "Serving Request: %s" method_;
-    dispatch_request ~ofn_rq ~token ~id ~method_ ~params;
+    dispatch_request ~io ~ofn_rq ~token ~id ~method_ ~params;
     state
   | Response r ->
     L.trace "process_queue" "Serving response for: %d" (Lsp.Base.Response.id r);
