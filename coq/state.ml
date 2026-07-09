@@ -210,6 +210,41 @@ let info_universes ~token ~st =
   let nconst = count_edges univ in
   (nuniv, nconst)
 
+(* The kernel's fresh-universe-level generator is process-global and
+   deliberately monotonic: it is never rolled back with the functional state
+   (that is what makes in-process backtracking safe), so it is not part of
+   any frozen [State.t] -- and hence not marshaled into a [.vof] snapshot.
+   A process that unmarshals states minted by ANOTHER process starts its own
+   generator at 0 and would re-mint level indices already present in the
+   restored universe graphs; the first new sentence that mints a level then
+   dies with the kernel anomaly [AcyclicGraph.Make(Point).AlreadyDeclared]
+   and poisons the session.  This advances the generator past every global
+   level index in [st]'s graph, by mint-and-discard (the generator exposes
+   no setter).  Over-advancing is harmless: indices only need to be fresh. *)
+let advance_univ_generator_past ~token ~st =
+  in_state ~token ~st
+    ~f:(fun () ->
+      let max_idx =
+        Univ.Level.Set.fold
+          (fun l acc ->
+            match Univ.Level.name l with
+            | Some u ->
+              let _, _, i = Univ.UGlobal.repr u in
+              if i > acc then i else acc
+            | None -> acc)
+          (UGraph.domain (Global.universes ()))
+          (-1)
+      in
+      let rec bump () =
+        match Univ.Level.name (UnivGen.fresh_level ()) with
+        | Some u ->
+          let _, _, i = Univ.UGlobal.repr u in
+          if i <= max_idx then bump ()
+        | None -> ()
+      in
+      if max_idx >= 0 then bump ())
+    ()
+
 (* Goal extraction: close the first open goal over its hypothesis context into a
    single closed type, suitable for emitting as a standalone [Definition]. The
    [mkNamed*] family abstracts the context variables, so the result references
