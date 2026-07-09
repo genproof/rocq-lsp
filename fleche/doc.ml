@@ -1100,18 +1100,33 @@ let log_beyond_target last_tok target =
 let max_errors_msg = "Maximum number of errors reached"
 
 let max_errors_node ~state ~range ~prev =
-  let msg = Coq.Pp_t.str max_errors_msg in
+  (* The sentinel is tagged with the budget that minted it: a client that
+     uses the sentinel as its completion signal must be able to tell a live
+     halt at its current budget from the stale relic of an earlier run under
+     a different one (a stop-at-first-error halt at max_errors=0 must not
+     settle a later report-all drive at max_errors=150).  The sentinel is
+     deliberately retained across [bump_version]: it is minted below the
+     error nodes it counted, so its retention implies the whole over-budget
+     error mass is retained with it -- a republished sentinel correctly
+     tells the client the doc still cannot advance under that budget. *)
+  let msg =
+    Coq.Pp_t.str
+      (Format.asprintf "%s (max_errors=%d)" max_errors_msg
+         !Config.v.max_errors)
+  in
   let parsing_diags = [ Diags.make range Diags.err msg ] in
   unparseable_node ~range ~prev ~parsing_diags ~parsing_feedback:[] ~state
     ~parsing_time:0.0
 
-(* Recognize a sentinel node so a resumed check can drop stale ones: they
-   mark a *previous* halt point and would otherwise linger mid-document
-   (and keep republishing) after checking has moved past them. *)
+(* Recognize a sentinel node (whatever its budget tag) so a resumed check can
+   drop stale ones: they mark a *previous* halt point and would otherwise
+   linger mid-document (and keep republishing) after checking has moved past
+   them. *)
 let node_is_max_errors_sentinel (n : Node.t) =
   List.exists
     (fun (d : _ Lang.Diagnostic.t) ->
-      String.equal max_errors_msg (pp_to_string d.Lang.Diagnostic.message))
+      Coq.Compat.Ocaml_413.String.starts_with ~prefix:max_errors_msg
+        (pp_to_string d.Lang.Diagnostic.message))
     n.Node.diags
 
 module Stop_cond = struct
