@@ -1344,6 +1344,18 @@ let doc_of_disk ~in_file : t =
   Coq.Compat.Ocaml_414.In_channel.with_open_bin out_vof (fun ic ->
       Marshal.from_channel ic)
 
+(* See [Coq.State.advance_univ_generator_past]: an unmarshaled doc carries
+   universe graphs minted by the donor process's generator; this process's
+   generator must move past them before anything new elaborates.  The final
+   state's graph is a superset of every prefix state's (global universe
+   declarations only grow along a linear document), so bumping past it
+   covers any later resume point. *)
+let advance_univ_counter_past ~token ~(doc : t) =
+  let st =
+    Util.last doc.nodes |> Stdlib.Option.fold ~some:Node.state ~none:doc.root
+  in
+  Coq.State.advance_univ_generator_past ~token ~st
+
 let save_vof ~token ~doc =
   match doc.completed with
   | Yes _ ->

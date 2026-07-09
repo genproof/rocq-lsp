@@ -76,6 +76,15 @@ val admit_goal : token:Limits.Token.t -> st:t -> (t, Loc.t) Protect.E.t
 val info_universes :
   token:Limits.Token.t -> st:t -> (int * int, Loc.t) Protect.E.t
 
+(** Advance the process-global fresh-universe-level generator past every
+    global level index present in [st]'s universe graph.  MUST be called
+    after unmarshaling states minted by another process (the [.vof] reload):
+    the generator is not part of the frozen state, and re-minting an index
+    present in the restored graphs raises the kernel anomaly
+    [AcyclicGraph.Make(Point).AlreadyDeclared]. *)
+val advance_univ_generator_past :
+  token:Limits.Token.t -> st:t -> (unit, Loc.t) Protect.E.t
+
 (** Goal extraction: close the first open goal over its context. *)
 module Extract : sig
   type t =
