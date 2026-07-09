@@ -187,6 +187,14 @@ val save_vof :
 (** Pass .v file *)
 val doc_of_disk : in_file:string -> t
 
+(** Advance the process-global fresh-universe generator past every level in
+    the doc's final universe graph.  MUST follow [doc_of_disk]: the
+    generator is not marshaled, and re-minting an index present in the
+    restored graphs is the kernel anomaly [AlreadyDeclared] (see
+    [Coq.State.advance_univ_generator_past]). *)
+val advance_univ_counter_past :
+  token:Coq.Limits.Token.t -> doc:t -> (unit, Coq.Loc_t.t) Coq.Protect.E.t
+
 (** [run ~token ?loc ?memo ~st cmds] run commands [cmds] starting on state [st],
     without commiting changes to the document. [loc] can be used to seed an
     initial location if desired, if not the locations will be considered

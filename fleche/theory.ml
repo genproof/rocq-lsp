@@ -394,6 +394,15 @@ let open_ ~io ~token ~env ~uri ~languageId ~raw ~version =
 let load_vof ~io ~token ~uri =
   let in_file = Lang.LUri.File.to_string_file uri in
   let doc = Doc.doc_of_disk ~in_file in
+  (* The snapshot's states carry universe levels minted by the donor
+     process; this process's generator must move past them BEFORE anything
+     new elaborates, or the first minting sentence dies with the kernel
+     anomaly [AlreadyDeclared] and poisons the session.  Fail the load when
+     the bump does not complete -- the client then falls back to a cold
+     [didOpen], which is always sound. *)
+  (match Doc.advance_univ_counter_past ~token ~doc with
+  | { Coq.Protect.E.r = Coq.Protect.R.Completed (Ok ()); _ } -> ()
+  | _ -> failwith "loadVof: universe generator bump failed");
   Handle.create ~uri ~doc;
   Register.Completed.fire ~io ~token ~doc
 
