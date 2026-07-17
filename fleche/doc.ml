@@ -1349,10 +1349,86 @@ let save ~token ~doc =
     let error = Coq.Pp_t.(str "Can't save document that failed to check") in
     Coq.Protect.E.error error
 
+(* Marshaling the whole document is the most expensive memory event in a
+   session: Marshal's sharing table transiently needs ~1x the live document
+   graph again (measured +6.7 GB for a 578 MB .vof of a 6.3 GB VST
+   document).  Running the marshal in a forked child isolates that
+   transient: the parent's RSS stays flat, and under real memory pressure
+   the kernel's OOM killer takes the ballooning child -- the save fails
+   with a clean error while the warm session (and its just-computed check
+   verdict) survives.  The child shares the heap copy-on-write and only
+   reads it, so the system-wide memory cost is unchanged; what changes is
+   what dies.
+
+   Child discipline: write to a temp file -- an OOM-killed child must not
+   leave a truncated .vof where a future session could try to load it --
+   and leave via [Unix._exit], never [exit], which would flush the
+   inherited stdout buffer onto the LSP protocol channel and run at_exit
+   handlers.  The parent renames on success, so the .vof appears
+   atomically.  Forking is safe here despite the server's reader/watchdog
+   threads: at fork time they are parked in C syscalls (only the forking
+   thread can run OCaml), the child touches no inherited channel, and
+   glibc's atfork handlers keep malloc -- all Marshal's table needs --
+   consistent.
+
+   [COQ_LSP_VOF_CHILD_DELAY_S] holds the child open before it writes; a
+   test hook so a kill-mid-save can be exercised deterministically.
+
+   Fork needs a Unix native/bytecode runtime; the jsoo / wasm workers and
+   Windows fall back to the in-process save. *)
+
+let can_fork =
+  Sys.unix
+  &&
+  match Sys.backend_type with
+  | Sys.Native | Sys.Bytecode -> true
+  | Sys.Other _ -> false
+
+let marshal_doc_to ~doc file =
+  Coq.Compat.Ocaml_414.Out_channel.with_open_bin file (fun oc ->
+      Marshal.to_channel oc doc [])
+
 let doc_to_disk ~doc ~in_file : unit =
   let out_vof = Filename.(remove_extension in_file) ^ ".vof" in
-  Coq.Compat.Ocaml_414.Out_channel.with_open_bin out_vof (fun oc ->
-      Marshal.to_channel oc doc [])
+  if not can_fork then marshal_doc_to ~doc out_vof
+  else
+    let tmp = out_vof ^ ".tmp" in
+    match Unix.fork () with
+    | 0 ->
+      let code =
+        try
+          (match Sys.getenv_opt "COQ_LSP_VOF_CHILD_DELAY_S" with
+          | Some s -> Unix.sleepf (float_of_string s)
+          | None -> ());
+          marshal_doc_to ~doc tmp;
+          0
+        with _ -> 1
+      in
+      Unix._exit code
+    | pid -> (
+      let rec wait () =
+        try Unix.waitpid [] pid
+        with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+      in
+      match snd (wait ()) with
+      | Unix.WEXITED 0 -> Sys.rename tmp out_vof
+      | status ->
+        (try Sys.remove tmp with Sys_error _ -> ());
+        let reason =
+          match status with
+          | Unix.WEXITED n -> Printf.sprintf "exited with code %d" n
+          | Unix.WSIGNALED n ->
+            (* [n] is OCaml's signal encoding (Sys.sigkill = -7), not the OS
+               number; print the name for the one that matters. *)
+            if n = Sys.sigkill then
+              "was killed by SIGKILL (likely the kernel OOM killer)"
+            else Printf.sprintf "was killed by signal %d (OCaml encoding)" n
+          | Unix.WSTOPPED n -> Printf.sprintf "was stopped by signal %d" n
+        in
+        CErrors.user_err
+          Pp.(
+            str "the .vof save process " ++ str reason
+            ++ str "; no snapshot was written (the session itself is unaffected)"))
 
 let doc_of_disk ~in_file : t =
   let out_vof = Filename.(remove_extension in_file) ^ ".vof" in
