@@ -155,6 +155,24 @@ module DocumentPerfData = struct
   [@@deriving yojson]
 end
 
+(* Outcome of an asynchronous .vof checkpoint (Doc.Checkpoint).  [error =
+   None] means the snapshot was renamed into place; [contents_md5] identifies
+   the document text the snapshot embeds (Digest of Contents.raw), so the
+   client can fingerprint the cache without re-reading the file. *)
+let mk_vofSaved ~uri ~version ~contents_md5 ~error =
+  let params =
+    [ ( "textDocument"
+      , Doc.VersionedTextDocumentIdentifier.(
+          to_yojson { uri; version }) )
+    ; ("contents_md5", `String contents_md5)
+    ; ( "error"
+      , match error with
+        | None -> `Null
+        | Some e -> `String e )
+    ]
+  in
+  Base.Notification.make ~method_:"$/coq/vofSaved" ~params ()
+
 let mk_perf ~uri ~version perf =
   let textDocument = { Doc.VersionedTextDocumentIdentifier.uri; version } in
   let params =

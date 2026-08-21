@@ -184,6 +184,16 @@ val save :
 val save_vof :
   token:Coq.Limits.Token.t -> doc:t -> (unit, Coq.Loc_t.t) Coq.Protect.E.t
 
+(** Asynchronous periodic [.vof] checkpointing of the document being checked
+    (armed by [Config.vof_checkpoint_interval > 0]; see the module in
+    [doc.ml]).  [reap] collects a finished checkpoint child -- rename the
+    snapshot into place (or discard the temp on failure) and emit
+    [$/coq/vofSaved].  Non-blocking ([WNOHANG]); call it from the server's
+    main loop so a child that outlives its check is still collected. *)
+module Checkpoint : sig
+  val reap : io:Io.CallBack.t -> unit
+end
+
 (** Pass .v file *)
 val doc_of_disk : in_file:string -> t
 

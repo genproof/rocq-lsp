@@ -31,11 +31,17 @@ let request ~token ~doc =
    state) instead of a Coq [.vo].  Used by the [coq/saveVof] request to persist
    a warm document so a fresh server can reload it via [coq/loadVof] instead of
    re-checking. *)
-let request_vof ~token ~doc =
+let request_vof ~token ~(doc : Fleche.Doc.t) =
   let open Coq.Protect.E.O in
   let lines = Fleche.Doc.lines doc in
+  (* Tell the client whether the snapshot is PARTIAL (a [Stopped] document:
+     positioned check, max_errors halt, ...), so its cache sidecar can
+     record that honestly -- a partial snapshot is loadable (checking
+     resumes at its frontier) but must never satisfy the client's
+     save-skip check, or a later full save would be suppressed forever. *)
+  let partial = not (Fleche.Doc.Completion.is_completed doc.completed) in
   let f () =
     let+ () = Fleche.Doc.save_vof ~token ~doc in
-    Ok `Null
+    Ok (`Assoc [ ("partial", `Bool partial) ])
   in
   Request.R.of_execution ~lines ~name:"save_vof" ~f ()

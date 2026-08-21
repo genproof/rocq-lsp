@@ -52,6 +52,7 @@ let concise_cb ofn =
     ; serverVersion = (fun _ -> ())
     ; serverStatus = (fun _ -> ())
     ; execInfo = (fun ~uri:_ ~version:_ ~range:_ -> ())
+    ; vofSaved = (fun ~uri:_ ~version:_ ~contents_md5:_ ~error:_ -> ())
     }
 
 (* Main loop *)

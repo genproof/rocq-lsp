@@ -43,6 +43,7 @@ let io =
   let serverVersion _ = () in
   let serverStatus _ = () in
   let execInfo ~uri:_ ~version:_ ~range:_ = () in
+  let vofSaved ~uri:_ ~version:_ ~contents_md5:_ ~error:_ = () in
   { Fleche.Io.CallBack.trace
   ; message
   ; diagnostics
@@ -51,6 +52,7 @@ let io =
   ; serverVersion
   ; serverStatus
   ; execInfo
+  ; vofSaved
   }
 
 let init_st = ref None
