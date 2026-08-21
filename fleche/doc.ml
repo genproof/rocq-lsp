@@ -1141,12 +1141,170 @@ module Stop_cond = struct
     else Continue
 end
 
+let can_fork =
+  Sys.unix
+  &&
+  match Sys.backend_type with
+  | Sys.Native | Sys.Bytecode -> true
+  | Sys.Other _ -> false
+
+let marshal_doc_to ~doc file =
+  Coq.Compat.Ocaml_414.Out_channel.with_open_bin file (fun oc ->
+      Marshal.to_channel oc doc [])
+
+(* [n] is OCaml's signal encoding (Sys.sigkill = -7), not the OS number;
+   print the name for the one that matters. *)
+let vof_child_reason (status : Unix.process_status) : string =
+  match status with
+  | Unix.WEXITED n -> Printf.sprintf "exited with code %d" n
+  | Unix.WSIGNALED n ->
+    if n = Sys.sigkill then
+      "was killed by SIGKILL (likely the kernel OOM killer)"
+    else Printf.sprintf "was killed by signal %d (OCaml encoding)" n
+  | Unix.WSTOPPED n -> Printf.sprintf "was stopped by signal %d" n
+
+(* Asynchronous periodic .vof checkpointing.
+
+   A non-cooperative divergence can only be freed by killing the server, and
+   the kill costs the whole elaborated prefix.  When
+   [Config.vof_checkpoint_interval > 0], the checking loop periodically
+   snapshots the document built SO FAR -- a *partial* document, [Stopped] at
+   the current frontier -- to [<file>.vof], so a fresh server can warm-start
+   from the last checkpoint instead of sentence one (loadVof handles
+   [Stopped] docs: a request past the stop point resumes checking, and a
+   [didChange] retains the common prefix).
+
+   The marshal runs in a forked child (same discipline as [doc_to_disk]
+   below: temp file, [Unix._exit], parent renames on success), so checking
+   CONTINUES while the snapshot writes -- the child's copy-on-write view is
+   frozen at fork time, and [Doc.t] is an immutable value.  The only
+   parent-side pause is the fork itself (page-table copy).
+
+   [tick] runs between sentences on the Coq thread; [reap] additionally runs
+   from the server's main loop ([check_or_yield]) so a child that finishes
+   after the check completes is still collected on the next client message.
+   The outcome is announced via [$/coq/vofSaved] ([Io.CallBack.vofSaved])
+   with the md5 of the snapshot's [Contents.raw], so the client can
+   fingerprint its cache sidecar without racing the file on disk.
+
+   At most one child runs at a time (module-global slot; the tmp path is
+   deterministic per file).  [drain_quiet] serializes the synchronous
+   [coq/saveVof] path against an in-flight checkpoint child. *)
+module Checkpoint = struct
+  type in_flight =
+    { pid : int
+    ; tmp : string
+    ; out : string
+    ; uri : Lang.LUri.File.t
+    ; version : int
+    ; md5 : string
+    }
+
+  let current : in_flight option ref = ref None
+
+  (* Last snapshot key (uri, version, node count): skip a checkpoint when
+     nothing was elaborated since the previous one. *)
+  let last_key : (Lang.LUri.File.t * int * int) option ref = ref None
+  let last_time : float ref = ref 0.
+
+  let notify ~io (inf : in_flight) ~error =
+    Io.Report.vofSaved ~io ~uri:inf.uri ~version:inf.version
+      ~contents_md5:inf.md5 ~error
+
+  let finish ~io (inf : in_flight) (status : Unix.process_status) =
+    current := None;
+    match status with
+    | Unix.WEXITED 0 -> (
+      match Sys.rename inf.tmp inf.out with
+      | () -> notify ~io inf ~error:None
+      | exception Sys_error e -> notify ~io inf ~error:(Some e))
+    | status ->
+      (try Sys.remove inf.tmp with Sys_error _ -> ());
+      notify ~io inf
+        ~error:(Some ("the checkpoint process " ^ vof_child_reason status))
+
+  let reap ~io =
+    match !current with
+    | None -> ()
+    | Some inf -> (
+      match Unix.waitpid [ Unix.WNOHANG ] inf.pid with
+      | 0, _ -> ()
+      | _, status -> finish ~io inf status
+      | exception Unix.Unix_error (Unix.EINTR, _, _) -> ()
+      | exception Unix.Unix_error (Unix.ECHILD, _, _) -> current := None)
+
+  (* Blocking reap WITHOUT notification: used by the synchronous save path
+     (which has no [io]) to free the tmp slot.  A drained child's meta is
+     never recorded client-side; the synchronous save that follows
+     re-snapshots the same document and reports through its own response. *)
+  let drain_quiet () =
+    match !current with
+    | None -> ()
+    | Some inf -> (
+      let rec wait () =
+        try Unix.waitpid [] inf.pid
+        with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+      in
+      match wait () with
+      | _, Unix.WEXITED 0 ->
+        current := None;
+        (try Sys.rename inf.tmp inf.out with Sys_error _ -> ())
+      | _, _ ->
+        current := None;
+        (try Sys.remove inf.tmp with Sys_error _ -> ())
+      | exception Unix.Unix_error (Unix.ECHILD, _, _) -> current := None)
+
+  let start ~(doc : t) ~last_tok =
+    let in_file = Lang.LUri.File.to_string_file doc.uri in
+    let out = Filename.(remove_extension in_file) ^ ".vof" in
+    let tmp = out ^ ".tmp" in
+    (* The snapshot is the document as elaborated SO FAR: mark it [Stopped]
+       at the frontier so a loading server resumes from there. *)
+    let snapshot = { doc with completed = Completion.Stopped last_tok } in
+    match Unix.fork () with
+    | 0 ->
+      let code =
+        try
+          (match Sys.getenv_opt "COQ_LSP_VOF_CHILD_DELAY_S" with
+          | Some s -> Unix.sleepf (float_of_string s)
+          | None -> ());
+          marshal_doc_to ~doc:snapshot tmp;
+          0
+        with _ -> 1
+      in
+      Unix._exit code
+    | pid ->
+      let md5 = Digest.to_hex (Digest.string doc.contents.raw) in
+      current := Some { pid; tmp; out; uri = doc.uri; version = doc.version; md5 }
+
+  let tick ~io ~(doc : t) ~last_tok =
+    let interval = !Config.v.vof_checkpoint_interval in
+    if interval > 0. && can_fork then (
+      reap ~io;
+      match !current with
+      | Some _ -> ()
+      | None ->
+        let now = Unix.gettimeofday () in
+        (* Arm the clock on the first tick instead of checkpointing: a
+           snapshot of the first sentence is worthless, and the epoch-zero
+           initial value would otherwise make EVERY check's first sentence
+           fire regardless of the interval. *)
+        if !last_time = 0. then last_time := now
+        else if now -. !last_time >= interval then (
+          let key = (doc.uri, doc.version, List.length doc.nodes) in
+          if !last_key <> Some key then (
+            last_time := now;
+            last_key := Some key;
+            start ~doc ~last_tok)))
+end
+
 (* main interpretation loop *)
 let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
   let rec stm doc st (last_tok : Lang.Range.t) prev acc_errors =
     (* Reporting of progress and diagnostics (if dirty) *)
     let doc = send_eager_diagnostics ~io ~uri ~version ~doc in
     report_progress ~io ~doc last_tok;
+    Checkpoint.tick ~io ~doc ~last_tok;
     match Stop_cond.should_stop acc_errors last_tok target with
     | Max_errors ->
       (* A max_errors halt is a *policy* stop, not a broken document: every
@@ -1377,18 +1535,10 @@ let save ~token ~doc =
    Fork needs a Unix native/bytecode runtime; the jsoo / wasm workers and
    Windows fall back to the in-process save. *)
 
-let can_fork =
-  Sys.unix
-  &&
-  match Sys.backend_type with
-  | Sys.Native | Sys.Bytecode -> true
-  | Sys.Other _ -> false
-
-let marshal_doc_to ~doc file =
-  Coq.Compat.Ocaml_414.Out_channel.with_open_bin file (fun oc ->
-      Marshal.to_channel oc doc [])
-
 let doc_to_disk ~doc ~in_file : unit =
+  (* Serialize against an in-flight asynchronous checkpoint child: both
+     write the same [.vof.tmp]. *)
+  Checkpoint.drain_quiet ();
   let out_vof = Filename.(remove_extension in_file) ^ ".vof" in
   if not can_fork then marshal_doc_to ~doc out_vof
   else
@@ -1449,7 +1599,13 @@ let advance_univ_counter_past ~token ~(doc : t) =
 
 let save_vof ~token ~doc =
   match doc.completed with
-  | Yes _ ->
+  (* [Stopped] documents (positioned check, max_errors halt, interrupted
+     elaboration) are also snapshotable: every node is valid and loadVof +
+     a request past the stop point resumes checking from the frontier.
+     [Failed] / [WorkspaceUpdated] stay rejected -- those documents are
+     recreated from scratch on the next change, so their prefix must not be
+     resurrected. *)
+  | Yes _ | Stopped _ ->
     let st =
       Util.last doc.nodes |> Stdlib.Option.fold ~some:Node.state ~none:doc.root
     in
