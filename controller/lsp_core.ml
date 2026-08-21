@@ -320,7 +320,7 @@ let do_close params =
    the request below, whose failure is observable. *)
 let do_load_vof ~io ~token params =
   let uri = Helpers.get_uri params in
-  try Fleche.Theory.load_vof ~io ~token ~uri
+  try ignore (Fleche.Theory.load_vof ~io ~token ~uri)
   with exn -> L.trace "coq/loadVof" "load failed: %s" (Printexc.to_string exn)
 
 (* [coq/loadVof] request: like the notification, but the load is acked, so a
@@ -336,7 +336,19 @@ let do_load_vof_rq ~io ~token ~params =
     let uri = Helpers.get_uri params in
     Fleche.Theory.load_vof ~io ~token ~uri
   with
-  | () -> Rq.Action.now (Ok `Null)
+  | version, contents_md5 ->
+    (* The restored document's identity, read from the unmarshaled doc
+       itself: the client resumes its version counter above [version] and
+       compares [contents_md5] against the text it wants -- equal means the
+       snapshot serves as-is, different means it must didChange (Fleche then
+       retains the common prefix).  Authoritative where sidecar files can be
+       left behind by a crash. *)
+    Rq.Action.now
+      (Ok
+         (`Assoc
+           [ ("version", `Int version)
+           ; ("contents_md5", `String contents_md5)
+           ]))
   | exception exn ->
     let message = "coq/loadVof failed: " ^ Printexc.to_string exn in
     L.trace "coq/loadVof" "%s" message;

@@ -1214,10 +1214,10 @@ module Checkpoint = struct
   let finish ~io (inf : in_flight) (status : Unix.process_status) =
     current := None;
     match status with
-    | Unix.WEXITED 0 -> (
-      match Sys.rename inf.tmp inf.out with
-      | () -> notify ~io inf ~error:None
-      | exception Sys_error e -> notify ~io inf ~error:(Some e))
+    | Unix.WEXITED 0 ->
+      (* The child renamed the snapshot itself (see [start]); the reap only
+         announces it. *)
+      notify ~io inf ~error:None
     | status ->
       (try Sys.remove inf.tmp with Sys_error _ -> ());
       notify ~io inf
@@ -1246,9 +1246,7 @@ module Checkpoint = struct
         with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
       in
       match wait () with
-      | _, Unix.WEXITED 0 ->
-        current := None;
-        (try Sys.rename inf.tmp inf.out with Sys_error _ -> ())
+      | _, Unix.WEXITED 0 -> current := None (* child renamed it *)
       | _, _ ->
         current := None;
         (try Sys.remove inf.tmp with Sys_error _ -> ())
@@ -1259,8 +1257,26 @@ module Checkpoint = struct
     let out = Filename.(remove_extension in_file) ^ ".vof" in
     let tmp = out ^ ".tmp" in
     (* The snapshot is the document as elaborated SO FAR: mark it [Stopped]
-       at the frontier so a loading server resumes from there. *)
-    let snapshot = { doc with completed = Completion.Stopped last_tok } in
+       at the frontier so a loading server resumes from there.
+
+       CRITICAL: [tick] runs inside the checking loop, where [doc.nodes] is
+       in INTERNAL order (newest first -- [process_and_parse] reverses on
+       entry and re-reverses on exit).  Every consumer of a loaded document
+       assumes EXTERNAL order (oldest first): the resume picks its state
+       from [Util.last doc.nodes], the universe bump reads the same node,
+       and [compute_common_prefix] scans from the head.  Marshaling the
+       internal order shipped a snapshot whose resume restarted from the
+       state after the FIRST sentence -- outside any proof, so resuming
+       mid-proof died with "illegal begin of vernac" (found on
+       liblzma-verification lzma_lz_decoder_init_body.v).  The trailing
+       comments of the in-flight parse handle are not captured (cosmetic:
+       hover-on-comment data only). *)
+    let snapshot =
+      { doc with
+        nodes = List.rev doc.nodes
+      ; completed = Completion.Stopped last_tok
+      }
+    in
     match Unix.fork () with
     | 0 ->
       let code =
@@ -1269,6 +1285,15 @@ module Checkpoint = struct
           | Some s -> Unix.sleepf (float_of_string s)
           | None -> ());
           marshal_doc_to ~doc:snapshot tmp;
+          (* The CHILD renames the finished snapshot into place: durability
+             must not depend on the parent's loop ever turning again --
+             during a non-cooperatively diverging sentence (the very case
+             checkpoints exist for) the parent is stuck inside Doc.check
+             until a watchdog kills the whole group, and a parent-side
+             rename would strand every completed checkpoint as a .tmp.
+             The rename is atomic; a child killed mid-marshal never reaches
+             it, so no truncated snapshot can ever be published. *)
+          Sys.rename tmp out;
           0
         with _ -> 1
       in
