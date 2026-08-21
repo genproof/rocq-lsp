@@ -495,7 +495,16 @@ let do_document ~params =
   do_document_request_maybe ~params ~handler
 
 let do_save_vo = do_document_request_maybe ~handler:Rq_save.request
-let do_save_vof = do_document_request_maybe ~handler:Rq_save.request_vof
+(* In lazy (check_only_on_request) mode, serve saveVof IMMEDIATELY with the
+   document as it stands: [Doc.save_vof] accepts [Stopped] documents, so a
+   positioned check's partial prefix is snapshotable -- the very point of a
+   checkpoint.  The postponing path would instead Cancel ("Document is not
+   ready"), since a lazy server may never complete the document at all.  In
+   eager mode keep the old behavior (postpone until completion). *)
+let do_save_vof ~params =
+  let handler = Rq_save.request_vof in
+  if !Fleche.Config.v.check_only_on_request then do_immediate ~params ~handler
+  else do_document_request ~postpone:true ~params ~handler
 let do_lens = do_document_request_maybe ~handler:Rq_lens.request
 
 (* could be smarter *)
@@ -757,6 +766,10 @@ type 'a cont =
   | Yield of 'a
 
 let check_or_yield ~io ~ofn ~token ~state =
+  (* Reap a finished asynchronous .vof checkpoint child, if any: renames the
+     temp snapshot into place and emits $/coq/vofSaved.  WNOHANG, so this is
+     free when nothing is in flight. *)
+  Fleche.Doc.Checkpoint.reap ~io;
   let ofn_rq r = Lsp.Base.Message.response r |> ofn in
   match Fleche.Theory.Check.maybe_check ~io ~token with
   | None -> Yield state
@@ -903,6 +916,9 @@ struct
   let execInfo ~uri ~version ~range =
     Lsp.JFleche.mk_execinfo ~uri ~version ~range |> ofn
 
+  let vofSaved ~uri ~version ~contents_md5 ~error =
+    Lsp.JFleche.mk_vofSaved ~uri ~version ~contents_md5 ~error |> ofn
+
   let cb =
     Fleche.Io.CallBack.
       { trace
@@ -913,5 +929,6 @@ struct
       ; serverVersion
       ; serverStatus
       ; execInfo
+      ; vofSaved
       }
 end

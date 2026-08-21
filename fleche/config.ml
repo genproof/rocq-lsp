@@ -134,6 +134,12 @@ type t =
         (** Send server status client notification to the client *)
   ; send_execinfo : bool [@default false]
         (** Send execution information to client *)
+  ; vof_checkpoint_interval : float [@default 0.]
+        (** Periodically snapshot the document being checked to [<file>.vof],
+            every this-many seconds (0 disables).  The snapshot is *partial*
+            ([Stopped] at the current frontier) and the marshal runs in a
+            forked child, so checking continues while it writes; completion
+            is announced via the [$/coq/vofSaved] notification. *)
   ; completion : Completion.t [@default Completion.default]
   }
 
@@ -167,6 +173,7 @@ let default =
   ; send_diags_extra_data = false
   ; send_serverStatus = true
   ; send_execinfo = false
+  ; vof_checkpoint_interval = 0.
   ; completion = Completion.default
   }
 
