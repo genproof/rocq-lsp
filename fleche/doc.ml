@@ -1202,10 +1202,23 @@ module Checkpoint = struct
 
   let current : in_flight option ref = ref None
 
-  (* Last snapshot key (uri, version, node count): skip a checkpoint when
-     nothing was elaborated since the previous one. *)
-  let last_key : (Lang.LUri.File.t * int * int) option ref = ref None
+  (* Last snapshot identity (uri, contents md5, node count): skip a
+     checkpoint when the STATE is unchanged since the previous snapshot --
+     the marshal is expensive (seconds + a couple hundred MB of I/O on a
+     heavy document), so an identical state must never be re-saved.  The
+     md5 (not the version) identifies the text: a version bump with
+     identical content (a timeout-relic bump, an identical didChange)
+     rebuilds the same nodes from the memo cache, and a version-keyed
+     dedupe would re-marshal an identical snapshot for it.  Cheap: the
+     node count is compared first, and the md5 is only computed in the
+     ambiguous same-count case. *)
+  let last_key : (Lang.LUri.File.t * string * int) option ref = ref None
   let last_time : float ref = ref 0.
+
+  (* Record an identity as freshly on disk -- also called by the
+     synchronous save path so a periodic tick never re-marshals a state a
+     [coq/saveVof] just wrote. *)
+  let note_saved ~uri ~md5 ~count = last_key := Some (uri, md5, count)
 
   let notify ~io (inf : in_flight) ~error =
     Io.Report.vofSaved ~io ~uri:inf.uri ~version:inf.version
@@ -1316,10 +1329,24 @@ module Checkpoint = struct
            fire regardless of the interval. *)
         if !last_time = 0. then last_time := now
         else if now -. !last_time >= interval then (
-          let key = (doc.uri, doc.version, List.length doc.nodes) in
-          if !last_key <> Some key then (
+          let count = List.length doc.nodes in
+          let changed =
+            match !last_key with
+            | Some (u, m, n) when Lang.LUri.File.equal u doc.uri ->
+              if count > n then true
+                (* count <= n: either the same state, or a PREFIX of the
+                   snapshotted state mid-rebuild (an identical-content
+                   version bump replays the nodes from the memo cache) --
+                   for the same text, the on-disk snapshot is at least as
+                   good, so overwriting it would REGRESS the cache.  Only
+                   different text (below) or a strict advance saves. *)
+              else m <> Digest.to_hex (Digest.string doc.contents.raw)
+            | _ -> true
+          in
+          if changed then (
+            let md5 = Digest.to_hex (Digest.string doc.contents.raw) in
             last_time := now;
-            last_key := Some key;
+            note_saved ~uri:doc.uri ~md5 ~count;
             start ~doc ~last_tok)))
 end
 
@@ -1636,7 +1663,16 @@ let save_vof ~token ~doc =
     in
     let uri = doc.uri in
     let in_file = Lang.LUri.File.to_string_file uri in
-    Coq.State.in_state ~token ~st ~f:(fun () -> doc_to_disk ~doc ~in_file) ()
+    let res =
+      Coq.State.in_state ~token ~st ~f:(fun () -> doc_to_disk ~doc ~in_file) ()
+    in
+    (match res with
+    | { Coq.Protect.E.r = Coq.Protect.R.Completed (Ok ()); _ } ->
+      Checkpoint.note_saved ~uri
+        ~md5:(Digest.to_hex (Digest.string doc.contents.raw))
+        ~count:(List.length doc.nodes)
+    | _ -> ());
+    res
   | _ ->
     let error = Coq.Pp_t.(str "Can't save document that failed to check") in
     Coq.Protect.E.error error
