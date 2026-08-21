@@ -31,14 +31,17 @@ val open_ :
   -> version:int
   -> unit
 
-(** Reload a fully-checked document from its on-disk [.vof] snapshot (written by
-    {!Doc.save_vof}) and register it as completed, skipping re-elaboration.
-    [uri] is the [.v] file; the snapshot is read from the sibling [.vof]. *)
+(** Reload a document from its on-disk [.vof] snapshot (written by
+    {!Doc.save_vof}) and register it, skipping re-elaboration.  [uri] is the
+    [.v] file; the snapshot is read from the sibling [.vof].  Returns the
+    loaded document's (version, contents md5) -- the authoritative identity
+    of what was restored, so the client can decide exact-vs-stale from the
+    ack rather than from sidecar files a crash can leave stale. *)
 val load_vof :
      io:Io.CallBack.t
   -> token:Coq.Limits.Token.t
   -> uri:Lang.LUri.File.t
-  -> unit
+  -> int * string
 
 (** Update a document inside a theory, returns the set of invalidated requests *)
 val change :

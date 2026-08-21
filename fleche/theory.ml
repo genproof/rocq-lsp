@@ -391,6 +391,10 @@ let open_ ~io ~token ~env ~uri ~languageId ~raw ~version =
    re-elaborating it.  The marshaled [Doc.t] restores every span/state, so the
    document is immediately registered as completed (no [Check.schedule]); a
    subsequent [didChange] then re-checks only the edited tail. *)
+(* Returns the loaded document's (version, contents md5): the AUTHORITATIVE
+   identity of what was just restored, read from the unmarshaled document
+   itself.  The client decides exact-vs-stale from this ack instead of from
+   sidecar bookkeeping that a crash can leave behind the snapshot. *)
 let load_vof ~io ~token ~uri =
   let in_file = Lang.LUri.File.to_string_file uri in
   let doc = Doc.doc_of_disk ~in_file in
@@ -404,7 +408,8 @@ let load_vof ~io ~token ~uri =
   | { Coq.Protect.E.r = Coq.Protect.R.Completed (Ok ()); _ } -> ()
   | _ -> failwith "loadVof: universe generator bump failed");
   Handle.create ~uri ~doc;
-  Register.Completed.fire ~io ~token ~doc
+  Register.Completed.fire ~io ~token ~doc;
+  (doc.version, Digest.to_hex (Digest.string doc.contents.raw))
 
 let change ~io ~token ~(doc : Doc.t) ~version ~raw =
   let uri = doc.uri in
