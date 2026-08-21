@@ -104,6 +104,13 @@ module DocumentPerfData : sig
   [@@deriving yojson]
 end
 
+val mk_vofSaved :
+     uri:Lang.LUri.File.t
+  -> version:int
+  -> contents_md5:string
+  -> error:string option
+  -> Base.Notification.t
+
 val mk_perf :
   uri:Lang.LUri.File.t -> version:int -> Fleche.Perf.t -> Base.Notification.t
 

@@ -31,6 +31,15 @@ module CallBack = struct
     ; serverStatus : ServerInfo.Status.t -> unit
     ; execInfo :
         uri:Lang.LUri.File.t -> version:int -> range:Lang.Range.t -> unit
+    ; vofSaved :
+           uri:Lang.LUri.File.t
+        -> version:int
+        -> contents_md5:string
+        -> error:string option
+        -> unit
+          (** Outcome of an asynchronous [.vof] checkpoint (see
+              [Doc.Checkpoint]); [error = None] means the snapshot was
+              written and renamed into place. *)
     }
 
   let default =
@@ -42,6 +51,7 @@ module CallBack = struct
     ; serverVersion = (fun _ -> ())
     ; serverStatus = (fun _ -> ())
     ; execInfo = (fun ~uri:_ ~version:_ ~range:_ -> ())
+    ; vofSaved = (fun ~uri:_ ~version:_ ~contents_md5:_ ~error:_ -> ())
     }
 
   let cb = ref default
@@ -113,4 +123,7 @@ module Report = struct
 
   let execInfo ~io ~uri ~version ~range =
     io.CallBack.execInfo ~uri ~version ~range
+
+  let vofSaved ~io ~uri ~version ~contents_md5 ~error =
+    io.CallBack.vofSaved ~uri ~version ~contents_md5 ~error
 end

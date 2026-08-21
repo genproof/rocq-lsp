@@ -34,6 +34,15 @@ module CallBack : sig
     ; serverStatus : ServerInfo.Status.t -> unit
     ; execInfo :
         uri:Lang.LUri.File.t -> version:int -> range:Lang.Range.t -> unit
+    ; vofSaved :
+           uri:Lang.LUri.File.t
+        -> version:int
+        -> contents_md5:string
+        -> error:string option
+        -> unit
+          (** Outcome of an asynchronous [.vof] checkpoint (see
+              [Doc.Checkpoint]); [error = None] means the snapshot was
+              written and renamed into place. *)
     }
 
   val set : t -> unit
@@ -103,5 +112,13 @@ module Report : sig
     -> uri:Lang.LUri.File.t
     -> version:int
     -> range:Lang.Range.t
+    -> unit
+
+  val vofSaved :
+       io:CallBack.t
+    -> uri:Lang.LUri.File.t
+    -> version:int
+    -> contents_md5:string
+    -> error:string option
     -> unit
 end
