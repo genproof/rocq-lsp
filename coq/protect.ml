@@ -120,6 +120,16 @@ module E = struct
      [None] and we build the error here.  Unlike the [Timeout]/[timeout]
      surface syntax, this bounds a whole multi-sentence run with a SINGLE
      budget (and accepts a float). *)
+  (* Rocq 9.2: the alarm raises [Control.Timeout] inside [f], and CErrors no
+     longer classifies that exception -- it reified as an ANOMALY ("Uncaught
+     exception Control.Timeout."), so a timed-out pretac was reported as a
+     plain tactic failure instead of the "Timeout!" user error the clients
+     pattern-match.  Register a handler so eval_exn reifies it properly. *)
+  let () =
+    CErrors.register_handler (function
+      | Control.Timeout -> Some Pp.(str "Timeout!")
+      | _ -> None)
+
   let timeout (t : float) (f : unit -> ('a, 'l) t) : ('a, 'l) t =
     (* Rocq 9.2: [Control.timeout] returns a [result] instead of an
        [option]. *)
