@@ -272,13 +272,25 @@ let statement_hash s = String.sub (Digest.to_hex (Digest.string s)) 0 12
 (* Print an EConstr fully explicit (implicits on, notations off) for round-trip
    safety, restoring the printing flags afterwards. *)
 let print_explicit env sigma c =
-  let open Constrextern in
-  let si, sn = (!print_implicits, !print_no_symbol) in
-  print_implicits := true;
-  print_no_symbol := true;
+  (* Rocq 9.2 removed Constrextern's mutable printing-flag refs; the same
+     switches live in the options table.  Read-modify-restore via
+     Goptions so the caller's printing settings are preserved. *)
+  let o_impl = [ "Printing"; "Implicit" ] and o_notn = [ "Printing"; "Notations" ] in
+  let get k =
+    match Goptions.get_option_value k with
+    | Some f -> (
+      match f () with
+      | Goptions.BoolValue b -> b
+      | _ -> false)
+    | None -> false
+  in
+  let set k b = Goptions.set_bool_option_value k b in
+  let si, sn = (get o_impl, get o_notn) in
+  set o_impl true;
+  set o_notn false;
   let finally () =
-    print_implicits := si;
-    print_no_symbol := sn
+    set o_impl si;
+    set o_notn sn
   in
   match Pp.string_of_ppcmds (Printer.pr_econstr_env env sigma c) with
   | s ->

@@ -121,9 +121,11 @@ module E = struct
      surface syntax, this bounds a whole multi-sentence run with a SINGLE
      budget (and accepts a float). *)
   let timeout (t : float) (f : unit -> ('a, 'l) t) : ('a, 'l) t =
+    (* Rocq 9.2: [Control.timeout] returns a [result] instead of an
+       [option]. *)
     match Control.timeout t f () with
-    | Some r -> r
-    | None -> error Pp.(str "Timeout!")
+    | Ok r -> r
+    | Error _info -> error Pp.(str "Timeout!")
 
   module O = struct
     let ( let+ ) x f = map ~f x

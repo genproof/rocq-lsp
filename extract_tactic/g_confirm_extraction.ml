@@ -1,4 +1,5 @@
-let _ = Mltop.add_known_module "coq-lsp.confirm-extraction"
+(* Rocq 9.2: Mltop.add_known_module is gone; registration is by the
+   findlib name alone (the Tacentries.tactic_extend key below). *)
 
 # 3 "g_confirm_extraction.mlg"
  

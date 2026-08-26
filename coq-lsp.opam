@@ -44,8 +44,10 @@ depends: [
   "ocamlfind" { >= "1.9.8" }
 
   # [release branch] Uncomment
-  # "rocq-core"          { >= "9.2" < "9.3"  }
-  # "rocq-stdlib"        { >= "9" & with-test }
+  # genproof rocq92 branch: build against the opam-installed Rocq 9.2
+  # instead of the vendored submodules (which stay uninitialized here).
+  "rocq-core"          { >= "9.2" < "9.3"  }
+  "rocq-stdlib"        { >= "9" & with-test }
 
   # [release branch] Remove
   "zarith" {>= "1.13"}
