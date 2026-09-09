@@ -15,6 +15,14 @@ val bump : unit -> unit
     stops executing sentences. *)
 val idle : unit -> unit
 
+(** Re-arm the CURRENT sentence under its own wall-clock budget (seconds) --
+    used for proof-closing commands when [Config.qed_timeout] > 0.  Cleared
+    by [bump] / [idle]. *)
+val set_budget : float -> unit
+
+(** The current sentence's budget override; 0.0 = none. *)
+val budget_override : unit -> float
+
 (** Wall-clock time the current sentence started, or [0.0] when idle. *)
 val started_at : unit -> float
 

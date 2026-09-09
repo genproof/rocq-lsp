@@ -24,6 +24,12 @@
    heartbeat). *)
 let beat = ref 0.0
 
+(* Per-sentence budget override (seconds); 0.0 = none (the watchdog uses
+   [Config.sentence_timeout]).  Set for proof-closing commands when
+   [Config.qed_timeout] > 0: instead of disarming entirely, the sentence
+   runs under its own -- typically much larger -- budget. *)
+let override = ref 0.0
+
 (* Set by the watchdog when it trips the interrupt; read by [Doc] to tell a
    timeout interruption apart from a genuine cancellation (both surface as
    [Coq.Protect.R.Interrupted]). *)
@@ -32,11 +38,19 @@ let timed_out = ref false
 (* Called by the check loop right before executing each sentence. *)
 let bump () =
   timed_out := false;
+  override := 0.0;
   beat := Unix.gettimeofday ()
+
+(* Re-arm the CURRENT sentence under its own budget (proof-closing
+   commands with [qed_timeout] > 0); keeps the heartbeat. *)
+let set_budget b = override := b
+let budget_override () = !override
 
 (* Called when the check loop stops executing sentences (done / stopped), so the
    watchdog disarms. *)
-let idle () = beat := 0.0
+let idle () =
+  override := 0.0;
+  beat := 0.0
 
 let started_at () = !beat
 

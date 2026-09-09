@@ -121,7 +121,12 @@ end
    [set_current_token] -- here it is driven by a clock instead.  Cheap poll;
    a no-op whenever [sentence_timeout] is [0.0] or no sentence is in flight. *)
 let rec sentence_watchdog () =
-  let budget = !Fleche.Config.v.sentence_timeout in
+  let budget =
+    (* A proof-closing sentence may carry its own budget (qed_timeout);
+       0.0 means no override. *)
+    let o = Fleche.Sentence_timer.budget_override () in
+    if o > 0.0 then o else !Fleche.Config.v.sentence_timeout
+  in
   let beat = Fleche.Sentence_timer.started_at () in
   (* Poll at 50ms precision only while a sentence is actually in flight under an
      active budget; back off to 200ms otherwise to keep an idle server quiet. *)
