@@ -92,6 +92,13 @@ type t =
   ; unicode_completion : Completion.Unicode.Mode.t option [@default None]
         (** deprecated, use [completion.unicode.enabled] *)
   ; max_errors : int [@default 150]
+  ; qed_timeout : float [@default 0.0]
+        (** Per-sentence wall-clock budget (seconds) for PROOF-CLOSING
+            commands (Qed / Defined / Save / Admitted), which are exempt
+            from [sentence_timeout] (their cost is honest kernel
+            verification, not a tactic that might diverge).  0 (default)
+            keeps them fully exempt; > 0 bounds them with their own,
+            typically much larger, budget. *)
   ; sentence_timeout : float [@default 0.0]
         (** Per-sentence wall-clock budget (seconds) for document checking.
             When [> 0.0], a single sentence that runs longer than this is
@@ -154,6 +161,7 @@ let default =
   ; debug = false
   ; unicode_completion = None
   ; max_errors = 150
+  ; qed_timeout = 0.0
   ; sentence_timeout = 0.0
   ; pp_type = 0
   ; show_stats_on_hover = false

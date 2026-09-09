@@ -1038,14 +1038,22 @@ let document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
     let process_res =
       match process_res.Coq.Protect.E.r with
       | Coq.Protect.R.Interrupted when Sentence_timer.timed_out_p () ->
+        (* Report the budget that actually minted this timeout: a
+           proof-closing sentence runs under [qed_timeout] (its override),
+           not [sentence_timeout]. *)
+        let o = Sentence_timer.budget_override () in
+        let budget, which =
+          if o > 0.0 then (o, "qed_timeout")
+          else (!Config.v.sentence_timeout, "sentence_timeout")
+        in
         (* Disarm the watchdog BEFORE the recovery below runs Coq again, so the
            re-arming interrupt does not abort recovery too. *)
         Sentence_timer.idle ();
         Sentence_timer.clear ();
         Coq.Protect.E.error
           (Coq.Pp_t.str
-             (Printf.sprintf "%s (exceeded %gs sentence_timeout)"
-                sentence_timeout_prefix !Config.v.sentence_timeout))
+             (Printf.sprintf "%s (exceeded %gs %s)" sentence_timeout_prefix
+                budget which))
       | _ -> process_res
     in
     let f = Coq.Utils.to_range ~lines in
@@ -1397,7 +1405,13 @@ let process_and_parse ~io ~token ~target ~uri ~version doc last_tok doc_handle =
          type-check below) honest, possibly-long verification must not be
          aborted as a "sentence timeout".  Disarm here, after the cheap parse;
          the next sentence re-arms via [bump] at the top of the loop. *)
-      if is_proof_closing_action action then Sentence_timer.idle ();
+      (if is_proof_closing_action action then
+         match !Config.v.qed_timeout with
+         | q when q > 0.0 ->
+           (* Bounded exemption: the kernel check runs under its own,
+              typically much larger, budget instead of none at all. *)
+           Sentence_timer.set_budget q
+         | _ -> Sentence_timer.idle ());
       (* Execution *)
       let action =
         document_action ~token ~io ~st ~parsing_diags ~parsing_feedback
